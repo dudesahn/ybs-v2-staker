@@ -6,7 +6,7 @@ WEEK = 60 * 60 * 24 * 7
 
 
 def test_swapper(
-    swapper_v4,
+    swapper_v5,
     vault,
     deposit_rewards,
     chain,
@@ -15,10 +15,10 @@ def test_swapper(
     management,
     crvusd_dummy_vault,
 ):
-    swapper = swapper_v4
+    swapper = swapper_v5
     strategy = old_strategy
     old_swapper = Contract(strategy.swapper())
-    price = (swapper.priceOracle() / 1e18)  # yCRV price as crvUSD
+    price = 1e18 / swapper.priceOracle()  # yCRV price as crvUSD
     print("\n👀 Price:", price, "\n")
     assert price > 0.10 and price < 1.0
     tx = strategy.harvest({"from": gov})
@@ -55,11 +55,80 @@ def test_swapper(
             event = tx.events["OTC"]
             print("Sell amount", event["sellTokenAmount"] / 1e18)
             print("Buy amount", event["buyTokenAmount"] / 1e18)
-            print("Effective price:", event["sellTokenAmount"] / event["buyTokenAmount"])
+            print(
+                "Effective price:", event["sellTokenAmount"] / event["buyTokenAmount"]
+            )
             bal = Contract(swapper.tokenOut()).balanceOf(swapper) / 1e18
             print(f"Remaining OTC balance {bal}\n")
         else:
             assert "OTC" not in tx.events
+
+
+def test_swapper_withdraw(
+    swapper_v5,
+    vault,
+    deposit_rewards,
+    chain,
+    gov,
+    old_strategy,
+    management,
+    crvusd_dummy_vault,
+):
+    swapper = swapper_v5
+    strategy = old_strategy
+    old_swapper = Contract(strategy.swapper())
+    price = 1e18 / swapper.priceOracle()  # yCRV price as crvUSD
+    print("\n👀 Price:", price, "\n")
+    assert price > 0.10 and price < 1.0
+    tx = strategy.harvest({"from": gov})
+    strategy.upgradeSwapper(swapper, {"from": gov})
+    assert swapper.management() == management
+    whale = accounts.at(
+        "0xEfb8B98A4BBd793317a863f1Ec9B92641aB1CBbb", force=True
+    )  # st-ycrv whale
+    ycrv = Contract(vault.token())
+    chain.sleep(3 * WEEK)
+    chain.mine()
+
+    v = swapper.vault()
+    swapper.setVault(crvusd_dummy_vault, {"from": gov})
+    swapper.setVault(v, {"from": gov})
+
+    amounts = [10e18, 1_000e18, 100_000e18, 0]
+    swapper.enableOtc(True, {"from": management})
+
+    status = swapper.otcEnabled()
+
+    for i in range(len(amounts)):
+        vault.transfer(swapper, amounts[i], {"from": whale})
+
+        deposit_rewards()
+
+        chain.sleep(WEEK)
+        chain.mine()
+
+        status = swapper.otcEnabled()
+
+        tx = strategy.harvest({"from": gov})
+
+        # first 2 shouldn't do any OTC
+        vault_balance = vault.balanceOf(swapper)
+
+        if status:
+            assert "OTC" in tx.events
+            event = tx.events["OTC"]
+            print("Sell amount", event["sellTokenAmount"] / 1e18)
+            print("Buy amount", event["buyTokenAmount"] / 1e18)
+            print(
+                "Effective price:", event["sellTokenAmount"] / event["buyTokenAmount"]
+            )
+            bal = Contract(swapper.tokenOut()).balanceOf(swapper) / 1e18
+            vault_bal = vault.balanceOf(swapper) / 1e18
+            print(f"Remaining yCRV balance {bal}")
+            print(f"Remaining st-yCRV balance {vault_bal}\n")
+        else:
+            assert "OTC" not in tx.events
+            print("⏭️ Skipped OTC for:", amounts[i] / 1e18, "st-yCRV donation")
 
 
 def test_swapper_settings(swapper_v4, management, user):
