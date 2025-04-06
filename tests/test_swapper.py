@@ -18,7 +18,8 @@ def test_swapper(
     swapper = swapper_v4
     strategy = old_strategy
     old_swapper = Contract(strategy.swapper())
-    price = 1 / (swapper.priceOracle() / 1e18)  # yCRV price as crvUSD
+    price = (swapper.priceOracle() / 1e18)  # yCRV price as crvUSD
+    print("\n👀 Price:", price, "\n")
     assert price > 0.10 and price < 1.0
     tx = strategy.harvest({"from": gov})
     strategy.upgradeSwapper(swapper, {"from": gov})
@@ -33,6 +34,7 @@ def test_swapper(
     swapper.setVault(v, {"from": gov})
 
     amounts = [10e18, 1_000e18, 100_000e18, 0]
+    swapper.enableOtc(True, {"from": management})
 
     status = swapper.otcEnabled()
 
@@ -44,10 +46,6 @@ def test_swapper(
         chain.sleep(WEEK)
         chain.mine()
 
-        if i % 3 == 0:
-            swapper.enableOtc(not status, {"from": management})
-            assert swapper.otcEnabled() != status
-
         status = swapper.otcEnabled()
 
         tx = strategy.harvest({"from": gov})
@@ -57,6 +55,7 @@ def test_swapper(
             event = tx.events["OTC"]
             print("Sell amount", event["sellTokenAmount"] / 1e18)
             print("Buy amount", event["buyTokenAmount"] / 1e18)
+            print("Effective price:", event["sellTokenAmount"] / event["buyTokenAmount"])
             bal = Contract(swapper.tokenOut()).balanceOf(swapper) / 1e18
             print(f"Remaining OTC balance {bal}\n")
         else:

@@ -3,8 +3,8 @@ pragma solidity ^0.8.18;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ICurve} from "./interfaces/curve/ICurve.sol";
-import {ICurveInt128} from "./interfaces/curve/ICurveInt128.sol";
+import {ICurve} from "contracts/interfaces/curve/ICurve.sol";
+import {ICurveInt128} from "contracts/interfaces/curve/ICurveInt128.sol";
 
 interface IZap {
     function zap(
@@ -168,7 +168,7 @@ contract SwapperV4 {
     function priceOracle() public view returns (uint) {
         uint oraclePricePool1 = pool1.price_oracle(1); // 1 = CRV index
         uint oraclePricePool2 = pool2.price_oracle();
-        return (PRECISION * oraclePricePool2) / oraclePricePool1;
+        return 1e54 / (oraclePricePool1 * oraclePricePool2);
     }
 
     function sweep(address _token) external onlyOwnerOrManagement {
