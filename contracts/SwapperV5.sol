@@ -36,6 +36,8 @@ interface IVault is IERC20 {
     function strategies(address) external returns (StrategyParams memory);
 
     function asset() external returns (address);
+
+    function token() external returns (address);
 }
 
 contract SwapperV5 {
@@ -59,6 +61,7 @@ contract SwapperV5 {
         IVault(0x27B5739e22ad9033bcBf192059122d163b60349D);
     address public management;
     mapping(address => bool) public allowedSwapper;
+    mapping(address => bool) public operator;
 
     modifier isAllowedSwapper() {
         require(
@@ -82,9 +85,20 @@ contract SwapperV5 {
         _;
     }
 
+    modifier onlyOperator() {
+        require(
+            msg.sender == owner ||
+                msg.sender == management ||
+                operator[msg.sender],
+            "!operator"
+        );
+        _;
+    }
+
     event OTC(uint price, uint sellTokenAmount, uint buyTokenAmount);
     event SetVault(address indexed vault);
     event SetAllowedSwapper(address indexed caller, bool indexed isAllowed);
+    event SetOperator(address indexed caller, bool indexed isAllowed);
     event SetManagement(address indexed management);
     event OTCEnabled(bool indexed enabled);
 
@@ -102,6 +116,8 @@ contract SwapperV5 {
         pool1 = _pool1;
         pool2 = _pool2;
         tokenOutPool1 = _tokenOutPool1;
+
+        require(address(_tokenOut) == approvedVault.token(), "!token");
 
         uint idxFound;
         address token;
@@ -159,6 +175,7 @@ contract SwapperV5 {
             uint256 vaultBalance = approvedVault.balanceOf(address(this));
             if (vaultBalance > amountToBuy) {
                 // this will actually withdraw ~2x the yCRV since PPS is around 2
+                // note that since this is a V2 vault, input amount is shares, not underlying
                 approvedVault.withdraw(amountToBuy, address(this));
             } else {
                 if (vaultBalance > 0) {
@@ -190,7 +207,7 @@ contract SwapperV5 {
         if (amount > 0) ERC20(_token).safeTransfer(owner, amount);
     }
 
-    function enableOtc(bool _enabled) external onlyOwnerOrManagement {
+    function enableOtc(bool _enabled) external onlyOperator {
         otcEnabled = _enabled;
         emit OTCEnabled(_enabled);
     }
@@ -211,6 +228,15 @@ contract SwapperV5 {
     ) external onlyOwnerOrManagement {
         allowedSwapper[_caller] = _isAllowed;
         emit SetAllowedSwapper(_caller, _isAllowed);
+    }
+
+    // Permit a caller to enable and disable OTC
+    function setOperator(
+        address _caller,
+        bool _isAllowed
+    ) external onlyOwnerOrManagement {
+        operator[_caller] = _isAllowed;
+        emit SetOperator(_caller, _isAllowed);
     }
 
     function setManagement(address _management) external onlyOwner {

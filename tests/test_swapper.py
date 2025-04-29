@@ -24,7 +24,7 @@ def test_swapper(
     tx = strategy.harvest({"from": gov})
     strategy.upgradeSwapper(swapper, {"from": gov})
     assert swapper.management() == management
-    whale = accounts.at("0x71E47a4429d35827e0312AA13162197C23287546", force=True)
+    whale = accounts.at("0x2DbcBdB6ED8DF05dDc859bd9e06A53E93e1C9561", force=True)
     ycrv = Contract(vault.token())
     chain.sleep(3 * WEEK)
     chain.mine()
@@ -35,6 +35,15 @@ def test_swapper(
 
     amounts = [10e18, 1_000e18, 100_000e18, 0]
     swapper.enableOtc(True, {"from": management})
+
+    # test our operator role
+    with brownie.reverts("!operator"):
+        swapper.enableOtc(False, {"from": whale})
+    swapper.setOperator(whale, True, {"from": management})
+    swapper.enableOtc(False, {"from": whale})
+    assert not swapper.otcEnabled()
+    swapper.enableOtc(True, {"from": whale})
+    assert swapper.otcEnabled()
 
     status = swapper.otcEnabled()
 
