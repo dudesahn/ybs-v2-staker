@@ -47,10 +47,10 @@ contract SwapperV5 {
     ERC20 public immutable tokenIn;
     ERC20 public immutable tokenOut;
     ERC20 public immutable tokenOutPool1;
-    ICurve public immutable pool1;
-    ICurveInt128 public immutable pool2;
-    uint public immutable pool1InTokenIdx;
-    uint public immutable pool1OutTokenIdx;
+    ICurve public immutable pool1; // 0xec977F46467a3021785Cff88894886E617abd65b, crvUSD-YB
+    ICurveInt128 public immutable pool2; // not live yet
+    uint public immutable pool1InTokenIdx; // 0
+    uint public immutable pool1OutTokenIdx; // 1
     bool public otcEnabled;
     address public constant owner = 0xFEB4acf3df3cDEA7399794D0869ef76A6EfAff52;
     address public constant treasury =
