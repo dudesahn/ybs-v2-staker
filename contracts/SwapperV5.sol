@@ -54,11 +54,11 @@ contract SwapperV5 {
     bool public otcEnabled;
     address public constant owner = 0xFEB4acf3df3cDEA7399794D0869ef76A6EfAff52;
     address public constant treasury =
-        0x93A62dA5a14C80f265DAbC077fCEE437B1a0Efde;
-    IZap public constant zap = IZap(0x78ada385b15D89a9B845D2Cac0698663F0c69e3C);
-    IVault public vault = IVault(0xBF319dDC2Edc1Eb6FDf9910E39b37Be221C8805F);
+        0x044F9C86a0Da637a235E83564215DC271Bc0deFc; // updated to use revenue recipient
+    IZap public constant zap = IZap();
+    IVault public vault = IVault(0xBF319dDC2Edc1Eb6FDf9910E39b37Be221C8805F); // yvcrvUSD-2
     IVault public constant approvedVault =
-        IVault(0x27B5739e22ad9033bcBf192059122d163b60349D);
+        IVault(); // add yvyYB address here
     address public management;
     mapping(address => bool) public allowedSwapper;
     mapping(address => bool) public operator;
@@ -145,7 +145,7 @@ contract SwapperV5 {
         tokenIn.safeTransferFrom(msg.sender, address(this), _amount);
         if (otcEnabled) (profit, _amount) = _sellOtc(_amount);
         if (_amount < PRECISION) return profit;
-        uint out = pool1.exchange_underlying(
+        uint out = pool1.exchange(
             pool1InTokenIdx,
             pool1OutTokenIdx,
             _amount,
@@ -193,12 +193,12 @@ contract SwapperV5 {
         emit OTC(price, amountToSell, amountToBuy);
         return (amountToBuy, _sellTokenAmount - amountToSell);
     }
-
-    // This function is not generic and is strictly for pricing crvUSD to yCRV
-    // Returns the price of crvUSD to yCRV
+    
+    /// @notice Returns the price of crvUSD to yYB
+    /// @dev To get price of yYB in USD, do 1e18 / priceOracle()
     function priceOracle() public view returns (uint) {
-        uint oraclePricePool1 = pool1.price_oracle(1); // 1 = CRV index
-        uint oraclePricePool2 = pool2.price_oracle();
+        uint oraclePricePool1 = pool1.price_oracle();
+        uint oraclePricePool2 = pool2.price_oracle(0);
         return 1e54 / (oraclePricePool1 * oraclePricePool2);
     }
 
