@@ -44,21 +44,21 @@ contract SwapperV5 {
     using SafeERC20 for ERC20;
 
     uint public constant PRECISION = 1e18;
-    ERC20 public immutable tokenIn;
-    ERC20 public immutable tokenOut;
-    ERC20 public immutable tokenOutPool1;
+    ERC20 public immutable tokenIn; // 0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E, crvUSD
+    ERC20 public immutable tokenOut; // 0x22222222aEA0076fCA927a3f44dc0B4FdF9479D6, yYB
+    ERC20 public immutable tokenOutPool1; // 0x01791F726B4103694969820be083196cC7c045fF, YB
     ICurve public immutable pool1; // 0xec977F46467a3021785Cff88894886E617abd65b, crvUSD-YB
-    ICurveInt128 public immutable pool2; // not live yet
+    ICurveInt128 public immutable pool2; // 0x5Ee9606e5611Fd6CE14BD2BC12db70BD53dC9daA, yYB-YB
     uint public immutable pool1InTokenIdx; // 0
     uint public immutable pool1OutTokenIdx; // 1
     bool public otcEnabled;
     address public constant owner = 0xFEB4acf3df3cDEA7399794D0869ef76A6EfAff52;
     address public constant treasury =
         0x044F9C86a0Da637a235E83564215DC271Bc0deFc; // updated to use revenue recipient
-    IZap public constant zap = IZap();
+    IZap public constant zap = IZap(0x7D3A6d1085FE898965cbC0b47A5a652965438cAC); // yYB Zap
     IVault public vault = IVault(0xBF319dDC2Edc1Eb6FDf9910E39b37Be221C8805F); // yvcrvUSD-2
     IVault public constant approvedVault =
-        IVault(); // add yvyYB address here
+        IVault(0x1F6f16945e395593d8050d6Cc33e4328a515B648); // yvyYB
     address public management;
     mapping(address => bool) public allowedSwapper;
     mapping(address => bool) public operator;
