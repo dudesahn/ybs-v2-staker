@@ -6,24 +6,32 @@ WEEK = 60 * 60 * 24 * 7
 
 
 def test_swapper(
-    swapper_v3, vault, deposit_rewards, chain, strategy, gov, crvusd_dummy_vault
+    swapper_v5,
+    vault,
+    deposit_rewards,
+    chain,
+    strategy,
+    gov,
+    management,
+    crvusd_dummy_vault,
+    fund_ycrv,
 ):
-    price = 1 / (swapper_v3.priceOracle() / 1e18)  # yCRV price as crvUSD
+    price = 1 / (swapper_v5.priceOracle() / 1e18)  # yCRV price as crvUSD
     assert price > 0.10 and price < 1.0
+    assert strategy.swapper() == swapper_v5
     tx = strategy.harvest()
-    whale = accounts.at("0x71E47a4429d35827e0312AA13162197C23287546", force=True)
-    ycrv = Contract(vault.token())
     chain.sleep(3 * WEEK)
     chain.mine()
 
-    v = swapper_v3.vault()
-    swapper_v3.setVault(crvusd_dummy_vault, {"from": gov})
-    swapper_v3.setVault(v, {"from": gov})
+    v = swapper_v5.vault()
+    swapper_v5.setVault(crvusd_dummy_vault, {"from": gov})
+    swapper_v5.setVault(v, {"from": gov})
+    swapper_v5.enableOtc(True, {"from": management})
 
-    amounts = [10e18, 100_000e18, 0]
+    amounts = [10 * 10**18, 100_000 * 10**18, 0]
 
     for i in range(3):
-        ycrv.transfer(swapper_v3, amounts[i], {"from": whale})
+        fund_ycrv(swapper_v5, amounts[i])
 
         deposit_rewards()
 
@@ -35,7 +43,7 @@ def test_swapper(
         event = tx.events["OTC"]
         print("Sell amount", event["sellTokenAmount"] / 1e18)
         print("Buy amount", event["buyTokenAmount"] / 1e18)
-        bal = Contract(swapper_v3.tokenOut()).balanceOf(swapper_v3) / 1e18
+        bal = Contract(swapper_v5.tokenOut()).balanceOf(swapper_v5) / 1e18
         print(f"Remaining OTC balance {bal}\n")
 
 
@@ -53,6 +61,7 @@ def test_operation(
     amount,
     RELATIVE_APPROX,
     deposit_rewards,
+    fund_ycrv,
 ):
     # do a harvest to get all of our loose vault funds into the strategy (assuming no more profitable harvests left)
     assert vault.strategies(strategy)["debtRatio"] == 10_000
@@ -111,6 +120,7 @@ def test_operation(
 
     # put it back up to 100%
     vault.updateStrategyDebtRatio(strategy, 10_000, {"from": gov})
+    chain.sleep(1)
     tx = strategy.harvest()
     try:
         minted = tx.events["Mint"]["value"]
@@ -126,14 +136,16 @@ def test_operation(
         print("🤑 Just swapped", swapped / 1e18, "CRV for", received / 1e18, "yCRV\n")
 
     # have a whale swap in a 500k yCRV
-    whale = accounts.at(
-        "0x71E47a4429d35827e0312AA13162197C23287546", force=True
-    )  # threshold multisig
+    whale = accounts.at("0x71E47a4429d35827e0312AA13162197C23287546", force=True)
     pool = Contract("0x99f5aCc8EC2Da2BC0771c32814EFF52b712de1E5")
+    swap_amount = 500_000 * 10 ** token.decimals()
+    fund_ycrv(whale)
+    assert token.balanceOf(whale) >= swap_amount
     token.approve(pool, 2**256 - 1, {"from": whale})
-    pool.exchange(1, 0, 500_000e18, 0, {"from": whale})
+    pool.exchange(1, 0, swap_amount, 0, {"from": whale})
 
     # now we should swap instead of minting
+    chain.sleep(1)
     tx = strategy.harvest()
     try:
         minted = tx.events["Mint"]["value"]

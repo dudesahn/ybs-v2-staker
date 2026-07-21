@@ -13,7 +13,9 @@ def test_swapper(
     gov,
     old_strategy,
     management,
+    user,
     crvusd_dummy_vault,
+    fund_ycrv,
 ):
     swapper = swapper_v5
     strategy = old_strategy
@@ -24,7 +26,6 @@ def test_swapper(
     tx = strategy.harvest({"from": gov})
     strategy.upgradeSwapper(swapper, {"from": gov})
     assert swapper.management() == management
-    whale = accounts.at("0x2DbcBdB6ED8DF05dDc859bd9e06A53E93e1C9561", force=True)
     ycrv = Contract(vault.token())
     chain.sleep(3 * WEEK)
     chain.mine()
@@ -33,22 +34,22 @@ def test_swapper(
     swapper.setVault(crvusd_dummy_vault, {"from": gov})
     swapper.setVault(v, {"from": gov})
 
-    amounts = [10e18, 1_000e18, 100_000e18, 0]
+    amounts = [10 * 10**18, 1_000 * 10**18, 100_000 * 10**18, 0]
     swapper.enableOtc(True, {"from": management})
 
     # test our operator role
     with brownie.reverts("!operator"):
-        swapper.enableOtc(False, {"from": whale})
-    swapper.setOperator(whale, True, {"from": management})
-    swapper.enableOtc(False, {"from": whale})
+        swapper.enableOtc(False, {"from": user})
+    swapper.setOperator(user, True, {"from": management})
+    swapper.enableOtc(False, {"from": user})
     assert not swapper.otcEnabled()
-    swapper.enableOtc(True, {"from": whale})
+    swapper.enableOtc(True, {"from": user})
     assert swapper.otcEnabled()
 
     status = swapper.otcEnabled()
 
     for i in range(len(amounts)):
-        ycrv.transfer(swapper, amounts[i], {"from": whale})
+        fund_ycrv(swapper, amounts[i])
 
         deposit_rewards()
 
@@ -82,6 +83,9 @@ def test_swapper_withdraw(
     old_strategy,
     management,
     crvusd_dummy_vault,
+    token,
+    user,
+    fund_ycrv,
 ):
     swapper = swapper_v5
     strategy = old_strategy
@@ -92,10 +96,6 @@ def test_swapper_withdraw(
     tx = strategy.harvest({"from": gov})
     strategy.upgradeSwapper(swapper, {"from": gov})
     assert swapper.management() == management
-    whale = accounts.at(
-        "0xEfb8B98A4BBd793317a863f1Ec9B92641aB1CBbb", force=True
-    )  # st-ycrv whale
-    ycrv = Contract(vault.token())
     chain.sleep(3 * WEEK)
     chain.mine()
 
@@ -103,13 +103,21 @@ def test_swapper_withdraw(
     swapper.setVault(crvusd_dummy_vault, {"from": gov})
     swapper.setVault(v, {"from": gov})
 
-    amounts = [10e18, 1_000e18, 100_000e18, 0]
+    amounts = [10 * 10**18, 1_000 * 10**18, 100_000 * 10**18, 0]
     swapper.enableOtc(True, {"from": management})
+
+    shares_needed = sum(amounts)
+    assets_needed = (shares_needed * vault.pricePerShare()) // 10**18
+    assets_needed = (assets_needed * 101) // 100
+    fund_ycrv(user, assets_needed)
+    token.approve(vault, assets_needed, {"from": user})
+    vault.deposit(assets_needed, {"from": user})
+    assert vault.balanceOf(user) >= shares_needed
 
     status = swapper.otcEnabled()
 
     for i in range(len(amounts)):
-        vault.transfer(swapper, amounts[i], {"from": whale})
+        vault.transfer(swapper, amounts[i], {"from": user})
 
         deposit_rewards()
 
@@ -140,8 +148,8 @@ def test_swapper_withdraw(
             print("⏭️ Skipped OTC for:", amounts[i] / 1e18, "st-yCRV donation")
 
 
-def test_swapper_settings(swapper_v4, management, user):
-    swapper = swapper_v4
+def test_swapper_settings(swapper_v5, management, user):
+    swapper = swapper_v5
     swapper.setAllowedSwapper(user, True, {"from": management})
     assert swapper.allowedSwapper(user)
     swapper.setAllowedSwapper(user, False, {"from": management})

@@ -45,12 +45,38 @@ def token():
 
 
 @pytest.fixture
-def amount(accounts, token, user):
+def fund_ycrv(accounts, token):
+    holders = [
+        accounts.at("0x1Effd55A8646F7Dc67C7578c20Ce575CefEB1120", force=True),
+        accounts.at("0xC5240FD754F4C52A3Cb71AB8625FB8E810E6fBB7", force=True),
+        accounts.at("0xEfb8B98A4BBd793317a863f1Ec9B92641aB1CBbb", force=True),
+    ]
+
+    def fund(recipient, amount=None):
+        if amount is None:
+            for holder in holders:
+                balance = token.balanceOf(holder)
+                if balance > 0:
+                    token.transfer(recipient, balance, {"from": holder})
+            return
+
+        remaining = amount
+        for holder in holders:
+            to_transfer = min(token.balanceOf(holder), remaining)
+            if to_transfer > 0:
+                token.transfer(recipient, to_transfer, {"from": holder})
+                remaining -= to_transfer
+            if remaining == 0:
+                return
+        raise ValueError(f"Unable to source {amount / 1e18:,.2f} yCRV")
+
+    yield fund
+
+
+@pytest.fixture
+def amount(token, user, fund_ycrv):
     amount = 10_000 * 10 ** token.decimals()
-    # In order to get some funds for the token you are about to use,
-    # it impersonate an exchange address to use it's funds.
-    reserve = accounts.at("0x99f5aCc8EC2Da2BC0771c32814EFF52b712de1E5", force=True)
-    token.transfer(user, amount, {"from": reserve})
+    fund_ycrv(user, amount)
     yield amount
 
 
@@ -192,10 +218,10 @@ def strategy(
     old_strategy,
     token,
     registry,
-    swapper_v3,
+    swapper_v5,
 ):
     # deploy!
-    strategy = strategist.deploy(Strategy, vault, ybs, reward_distributor, swapper_v3)
+    strategy = strategist.deploy(Strategy, vault, ybs, reward_distributor, swapper_v5)
     strategy.setKeeper(keeper)
 
     # check and print starting boost of strategy
@@ -268,7 +294,7 @@ def crvusd_dummy_vault(reward_token, gov):
 def crvusd_whale(accounts, token, user, reward_token):
     # In order to get some funds for the token you are about to use,
     # it impersonate an exchange address to use it's funds.
-    amount = 100_000e18
+    amount = 100_000 * 10**18
     crvusd = Contract(reward_token.asset())
     reserve = accounts.at("0xA920De414eA4Ab66b97dA1bFE9e6EcA7d4219635", force=True)
     crvusd.transfer(user, amount, {"from": reserve})
