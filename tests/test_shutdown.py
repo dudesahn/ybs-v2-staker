@@ -1,63 +1,116 @@
-# TODO: Add tests that show proper operation of this strategy through "emergencyExit"
-#       Make sure to demonstrate the "worst case losses" as well as the time it takes
-
-from brownie import ZERO_ADDRESS
+import brownie
 import pytest
 
 
 def test_vault_shutdown_can_withdraw(
-    chain, token, vault, strategy, user, amount, RELATIVE_APPROX
+    chain,
+    token,
+    vault,
+    strategy,
+    user,
+    gov,
+    amount,
+    RELATIVE_APPROX,
+    fund_ycrv,
 ):
-    ## Deposit in Vault
+    vault_assets_before_deposit = vault.totalAssets()
+    strategy_debt_before_deposit = vault.strategies(strategy)["totalDebt"]
+    user_balance_before_deposit = token.balanceOf(user)
+    user_shares_before_deposit = vault.balanceOf(user)
+
     token.approve(vault.address, amount, {"from": user})
     vault.deposit(amount, {"from": user})
-    assert token.balanceOf(vault.address) >= amount
 
-    if token.balanceOf(user) > 0:
-        token.transfer(ZERO_ADDRESS, token.balanceOf(user), {"from": user})
+    assert token.balanceOf(user) == user_balance_before_deposit - amount
+    assert vault.balanceOf(user) > user_shares_before_deposit
+    assert vault.totalAssets() == vault_assets_before_deposit + amount
 
-    # Harvest 1: Send funds through the strategy
-    strategy.harvest()
-    chain.sleep(3600 * 7)
+    chain.sleep(1)
     chain.mine(1)
-    assert strategy.estimatedTotalAssets() >= amount
+    strategy.harvest()
 
-    ## Set Emergency
-    vault.setEmergencyShutdown(True, {"from": vault.governance()})
+    params_after_harvest = vault.strategies(strategy)
+    assert params_after_harvest["totalDebt"] >= strategy_debt_before_deposit + amount
 
-    ## Withdraw (does it work, do you get what you expect)
-    vault.withdraw({"from": user})
+    vault.setEmergencyShutdown(True, {"from": gov})
 
-    assert token.balanceOf(user) >= amount - 2
+    assert vault.emergencyShutdown()
+    assert vault.creditAvailable(strategy.address) == 0
+    assert vault.debtOutstanding(strategy.address) == params_after_harvest["totalDebt"]
+
+    # Shutdown must block new capital while leaving share redemptions open.
+    fund_ycrv(user, 1)
+    assert token.balanceOf(user) >= 1
+    with brownie.reverts():
+        vault.deposit(1, {"from": user})
+
+    user_shares = vault.balanceOf(user) - user_shares_before_deposit
+    user_balance_before_withdraw = token.balanceOf(user)
+    vault_assets_before_withdraw = vault.totalAssets()
+    strategy_debt_before_withdraw = vault.strategies(strategy)["totalDebt"]
+
+    tx = vault.withdraw(user_shares, user, {"from": user})
+    amount_withdrawn = token.balanceOf(user) - user_balance_before_withdraw
+
+    assert amount_withdrawn == tx.return_value
+    assert pytest.approx(amount_withdrawn, rel=RELATIVE_APPROX) == amount
+    assert vault.balanceOf(user) == user_shares_before_deposit
+    assert vault.strategies(strategy)["totalDebt"] <= strategy_debt_before_withdraw
+    assert vault.totalAssets() <= vault_assets_before_withdraw - amount_withdrawn
 
 
 def test_basic_shutdown(
-    chain, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX
+    chain, token, vault, strategy, user, gov, amount, RELATIVE_APPROX
 ):
-    # Deposit to the vault
+    vault_assets_before_deposit = vault.totalAssets()
+    strategy_debt_before_deposit = vault.strategies(strategy)["totalDebt"]
+
     token.approve(vault.address, amount, {"from": user})
     vault.deposit(amount, {"from": user})
-    assert token.balanceOf(vault.address) >= amount
+    assert vault.totalAssets() == vault_assets_before_deposit + amount
 
-    # Harvest 1: Send funds through the strategy
+    chain.sleep(1)
+    chain.mine(1)
     strategy.harvest()
+
+    params_before_shutdown = vault.strategies(strategy)
+    strategy_assets_before_shutdown = strategy.estimatedTotalAssets()
+    vault_balance_before_shutdown = token.balanceOf(vault)
+    vault_total_debt_before_shutdown = vault.totalDebt()
+    vault_total_assets_before_shutdown = vault.totalAssets()
+    vault_debt_ratio_before_shutdown = vault.debtRatio()
+
+    assert params_before_shutdown["totalDebt"] >= strategy_debt_before_deposit + amount
+
+    vault.setEmergencyShutdown(True, {"from": gov})
+
+    assert vault.emergencyShutdown()
+    assert vault.creditAvailable(strategy.address) == 0
+    assert (
+        vault.debtOutstanding(strategy.address) == params_before_shutdown["totalDebt"]
+    )
+
+    # A harvest during Vault shutdown must repay all debt and leave the full
+    # position idle in the Vault, without silently changing strategy limits.
+    chain.sleep(1)
     chain.mine(1)
-    assert strategy.estimatedTotalAssets() >= amount
+    strategy.harvest({"from": gov})
 
-    ## Earn interest
-    chain.sleep(3600 * 24 * 1)  ## Sleep 1 day
-    chain.mine(1)
-
-    # Harvest 2: Realize profit
-    strategy.harvest()
-    chain.sleep(3600 * 6)  # 6 hrs needed for profits to unlock
-    chain.mine(1)
-
-    ## Set emergency
-    strategy.setEmergencyExit({"from": strategist})
-
-    strategy.harvest()  ## Remove funds from strategy
-
-    assert token.balanceOf(strategy) == 0
-    assert token.balanceOf(vault) >= amount  ## The vault has all funds
-    ## NOTE: May want to tweak this based on potential loss during migration
+    params_after_shutdown = vault.strategies(strategy)
+    assert params_after_shutdown["debtRatio"] == params_before_shutdown["debtRatio"]
+    assert params_after_shutdown["totalDebt"] == 0
+    assert vault.debtRatio() == vault_debt_ratio_before_shutdown
+    assert vault.totalDebt() == (
+        vault_total_debt_before_shutdown - params_before_shutdown["totalDebt"]
+    )
+    assert vault.debtOutstanding(strategy.address) == 0
+    assert strategy.balanceOfStaked() <= 1
+    assert strategy.estimatedTotalAssets() <= 1
+    assert (
+        token.balanceOf(vault) - vault_balance_before_shutdown
+        >= strategy_assets_before_shutdown - 2
+    )
+    accounted_idle = vault.totalAssets() - vault.totalDebt()
+    assert token.balanceOf(vault) >= accounted_idle
+    tolerated_loss = max(2, int(vault_total_assets_before_shutdown * RELATIVE_APPROX))
+    assert vault.totalAssets() >= vault_total_assets_before_shutdown - tolerated_loss

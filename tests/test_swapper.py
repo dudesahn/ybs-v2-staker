@@ -1,77 +1,108 @@
 import brownie
-from brownie import Contract, accounts, ZERO_ADDRESS
-import pytest
+from brownie import Contract
+
 
 WEEK = 60 * 60 * 24 * 7
+PRECISION = 10**18
+MAX_UINT = 2**256 - 1
+
+
+def _prepare_swapper(swapper, strategy, chain, gov, management):
+    old_swapper = strategy.swapper()
+    token_in = Contract(swapper.tokenIn())
+
+    strategy.harvest({"from": gov})
+    strategy.upgradeSwapper(swapper, {"from": gov})
+
+    assert strategy.swapper() == swapper
+    assert token_in.allowance(strategy, old_swapper) == 0
+    assert token_in.allowance(strategy, swapper) == MAX_UINT
+    assert swapper.management() == management
+    assert swapper.priceOracle() > 0
+
+    chain.sleep(3 * WEEK)
+    chain.mine()
+
+
+def _harvest_week(strategy, deposit_rewards, chain, gov):
+    deposit_rewards()
+    chain.sleep(WEEK)
+    chain.mine()
+    return strategy.harvest({"from": gov})
+
+
+def _assert_otc_event(tx):
+    assert "OTC" in tx.events
+    event = tx.events["OTC"]
+
+    assert event["price"] > 0
+    assert event["sellTokenAmount"] > 0
+    assert event["buyTokenAmount"] > 0
+    quoted_buy_amount = event["sellTokenAmount"] * event["price"] // PRECISION
+    # When the available buy-token balance caps an OTC trade, SwapperV5 derives
+    # sellTokenAmount with a division and rounds down. Reconstructing the quote
+    # here performs a second round down, so the emitted buy amount can exceed it
+    # by at most ceil(price / PRECISION) token-wei.
+    rounding_tolerance = (event["price"] + PRECISION - 1) // PRECISION
+    assert quoted_buy_amount <= event["buyTokenAmount"]
+    assert event["buyTokenAmount"] - quoted_buy_amount <= rounding_tolerance
+    return event
+
+
+def _assert_otc_enabled_event(tx, enabled):
+    assert tx.events["OTCEnabled"]["enabled"] is enabled
 
 
 def test_swapper(
     swapper_v5,
-    vault,
     deposit_rewards,
     chain,
     gov,
     old_strategy,
     management,
-    user,
-    crvusd_dummy_vault,
     fund_ycrv,
 ):
     swapper = swapper_v5
     strategy = old_strategy
-    old_swapper = Contract(strategy.swapper())
-    price = 1e18 / swapper.priceOracle()  # yCRV price as crvUSD
-    print("\n👀 Price:", price, "\n")
-    assert price > 0.10 and price < 1.0
-    tx = strategy.harvest({"from": gov})
-    strategy.upgradeSwapper(swapper, {"from": gov})
-    assert swapper.management() == management
-    ycrv = Contract(vault.token())
-    chain.sleep(3 * WEEK)
-    chain.mine()
+    token_out = Contract(swapper.tokenOut())
+    treasury_vault = Contract(swapper.vault())
 
-    v = swapper.vault()
-    swapper.setVault(crvusd_dummy_vault, {"from": gov})
-    swapper.setVault(v, {"from": gov})
+    _prepare_swapper(swapper, strategy, chain, gov, management)
 
-    amounts = [10 * 10**18, 1_000 * 10**18, 100_000 * 10**18, 0]
-    swapper.enableOtc(True, {"from": management})
-
-    # test our operator role
-    with brownie.reverts("!operator"):
-        swapper.enableOtc(False, {"from": user})
-    swapper.setOperator(user, True, {"from": management})
-    swapper.enableOtc(False, {"from": user})
     assert not swapper.otcEnabled()
-    swapper.enableOtc(True, {"from": user})
+    token_out_before = token_out.balanceOf(swapper)
+    treasury_shares_before = treasury_vault.balanceOf(swapper.treasury())
+    tx = _harvest_week(strategy, deposit_rewards, chain, gov)
+    assert "OTC" not in tx.events
+    assert token_out.balanceOf(swapper) == token_out_before
+    assert treasury_vault.balanceOf(swapper.treasury()) == treasury_shares_before
+
+    tx = swapper.enableOtc(True, {"from": management})
+    _assert_otc_enabled_event(tx, True)
     assert swapper.otcEnabled()
 
-    status = swapper.otcEnabled()
+    fund_ycrv(swapper, 10 * 10 ** token_out.decimals())
+    token_out_before = token_out.balanceOf(swapper)
+    treasury_shares_before = treasury_vault.balanceOf(swapper.treasury())
 
-    for i in range(len(amounts)):
-        fund_ycrv(swapper, amounts[i])
+    tx = _harvest_week(strategy, deposit_rewards, chain, gov)
+    event = _assert_otc_event(tx)
 
-        deposit_rewards()
+    assert event["buyTokenAmount"] <= token_out_before
+    assert token_out.balanceOf(swapper) == token_out_before - event["buyTokenAmount"]
+    assert treasury_vault.balanceOf(swapper.treasury()) > treasury_shares_before
+    assert swapper.otcEnabled()
 
-        chain.sleep(WEEK)
-        chain.mine()
+    tx = swapper.enableOtc(False, {"from": management})
+    _assert_otc_enabled_event(tx, False)
+    assert not swapper.otcEnabled()
 
-        status = swapper.otcEnabled()
-
-        tx = strategy.harvest({"from": gov})
-
-        if status:
-            assert "OTC" in tx.events
-            event = tx.events["OTC"]
-            print("Sell amount", event["sellTokenAmount"] / 1e18)
-            print("Buy amount", event["buyTokenAmount"] / 1e18)
-            print(
-                "Effective price:", event["sellTokenAmount"] / event["buyTokenAmount"]
-            )
-            bal = Contract(swapper.tokenOut()).balanceOf(swapper) / 1e18
-            print(f"Remaining OTC balance {bal}\n")
-        else:
-            assert "OTC" not in tx.events
+    token_out_before = token_out.balanceOf(swapper)
+    treasury_shares_before = treasury_vault.balanceOf(swapper.treasury())
+    tx = _harvest_week(strategy, deposit_rewards, chain, gov)
+    assert "OTC" not in tx.events
+    assert token_out.balanceOf(swapper) == token_out_before
+    assert treasury_vault.balanceOf(swapper.treasury()) == treasury_shares_before
 
 
 def test_swapper_withdraw(
@@ -82,78 +113,155 @@ def test_swapper_withdraw(
     gov,
     old_strategy,
     management,
-    crvusd_dummy_vault,
     token,
     user,
     fund_ycrv,
 ):
     swapper = swapper_v5
     strategy = old_strategy
-    old_swapper = Contract(strategy.swapper())
-    price = 1e18 / swapper.priceOracle()  # yCRV price as crvUSD
-    print("\n👀 Price:", price, "\n")
-    assert price > 0.10 and price < 1.0
-    tx = strategy.harvest({"from": gov})
-    strategy.upgradeSwapper(swapper, {"from": gov})
-    assert swapper.management() == management
-    chain.sleep(3 * WEEK)
-    chain.mine()
+    treasury_vault = Contract(swapper.vault())
 
-    v = swapper.vault()
-    swapper.setVault(crvusd_dummy_vault, {"from": gov})
-    swapper.setVault(v, {"from": gov})
+    _prepare_swapper(swapper, strategy, chain, gov, management)
 
-    amounts = [10 * 10**18, 1_000 * 10**18, 100_000 * 10**18, 0]
-    swapper.enableOtc(True, {"from": management})
+    shares_to_supply = 10 * PRECISION
+    assets_needed = (
+        shares_to_supply * vault.pricePerShare() + PRECISION - 1
+    ) // PRECISION
+    assets_to_deposit = assets_needed * 101 // 100 + 1
 
-    shares_needed = sum(amounts)
-    assets_needed = (shares_needed * vault.pricePerShare()) // 10**18
-    assets_needed = (assets_needed * 101) // 100
-    fund_ycrv(user, assets_needed)
-    token.approve(vault, assets_needed, {"from": user})
-    vault.deposit(assets_needed, {"from": user})
-    assert vault.balanceOf(user) >= shares_needed
+    fund_ycrv(user, assets_to_deposit)
+    token.approve(vault, assets_to_deposit, {"from": user})
+    vault.deposit(assets_to_deposit, {"from": user})
+    assert vault.balanceOf(user) >= shares_to_supply
+    vault.transfer(swapper, shares_to_supply, {"from": user})
 
-    status = swapper.otcEnabled()
+    tx = swapper.enableOtc(True, {"from": management})
+    _assert_otc_enabled_event(tx, True)
+    assert swapper.otcEnabled()
 
-    for i in range(len(amounts)):
-        vault.transfer(swapper, amounts[i], {"from": user})
+    shares_before = vault.balanceOf(swapper)
+    token_out_before = token.balanceOf(swapper)
+    treasury_shares_before = treasury_vault.balanceOf(swapper.treasury())
 
-        deposit_rewards()
+    tx = _harvest_week(strategy, deposit_rewards, chain, gov)
+    event = _assert_otc_event(tx)
 
-        chain.sleep(WEEK)
-        chain.mine()
+    shares_after = vault.balanceOf(swapper)
+    token_out_after = token.balanceOf(swapper)
+    assert shares_after < shares_before
+    assert token_out_after + event["buyTokenAmount"] > token_out_before
+    assert treasury_vault.balanceOf(swapper.treasury()) > treasury_shares_before
 
-        status = swapper.otcEnabled()
+    tx = swapper.enableOtc(False, {"from": management})
+    _assert_otc_enabled_event(tx, False)
+    assert not swapper.otcEnabled()
 
-        tx = strategy.harvest({"from": gov})
-
-        # first 2 shouldn't do any OTC
-        vault_balance = vault.balanceOf(swapper)
-
-        if status:
-            assert "OTC" in tx.events
-            event = tx.events["OTC"]
-            print("Sell amount", event["sellTokenAmount"] / 1e18)
-            print("Buy amount", event["buyTokenAmount"] / 1e18)
-            print(
-                "Effective price:", event["sellTokenAmount"] / event["buyTokenAmount"]
-            )
-            bal = Contract(swapper.tokenOut()).balanceOf(swapper) / 1e18
-            vault_bal = vault.balanceOf(swapper) / 1e18
-            print(f"Remaining yCRV balance {bal}")
-            print(f"Remaining st-yCRV balance {vault_bal}\n")
-        else:
-            assert "OTC" not in tx.events
-            print("⏭️ Skipped OTC for:", amounts[i] / 1e18, "st-yCRV donation")
+    shares_before = vault.balanceOf(swapper)
+    token_out_before = token.balanceOf(swapper)
+    treasury_shares_before = treasury_vault.balanceOf(swapper.treasury())
+    tx = _harvest_week(strategy, deposit_rewards, chain, gov)
+    assert "OTC" not in tx.events
+    assert vault.balanceOf(swapper) == shares_before
+    assert token.balanceOf(swapper) == token_out_before
+    assert treasury_vault.balanceOf(swapper.treasury()) == treasury_shares_before
 
 
-def test_swapper_settings(swapper_v5, management, user):
+def test_swapper_settings(
+    swapper_v5,
+    gov,
+    management,
+    user,
+    crvusd_dummy_vault,
+):
     swapper = swapper_v5
-    swapper.setAllowedSwapper(user, True, {"from": management})
+
+    with brownie.reverts("!ownerOrManagement"):
+        swapper.setAllowedSwapper(user, True, {"from": user})
+
+    tx = swapper.setAllowedSwapper(user, True, {"from": management})
+    assert tx.events["SetAllowedSwapper"]["caller"] == user
+    assert tx.events["SetAllowedSwapper"]["isAllowed"] is True
     assert swapper.allowedSwapper(user)
-    swapper.setAllowedSwapper(user, False, {"from": management})
+
+    tx = swapper.setAllowedSwapper(user, False, {"from": gov})
+    assert tx.events["SetAllowedSwapper"]["caller"] == user
+    assert tx.events["SetAllowedSwapper"]["isAllowed"] is False
     assert not swapper.allowedSwapper(user)
 
-    with brownie.reverts():
-        swapper.setAllowedSwapper(ZERO_ADDRESS, True, {"from": user})
+    original_vault = swapper.vault()
+    token_in = Contract(swapper.tokenIn())
+    assert token_in.allowance(swapper, original_vault) == MAX_UINT
+
+    with brownie.reverts("!owner"):
+        swapper.setVault(crvusd_dummy_vault, {"from": management})
+
+    tx = swapper.setVault(crvusd_dummy_vault, {"from": gov})
+    assert tx.events["SetVault"]["vault"] == crvusd_dummy_vault
+    assert swapper.vault() == crvusd_dummy_vault
+    assert token_in.allowance(swapper, original_vault) == 0
+    assert token_in.allowance(swapper, crvusd_dummy_vault) == MAX_UINT
+
+    tx = swapper.setVault(original_vault, {"from": gov})
+    assert tx.events["SetVault"]["vault"] == original_vault
+    assert swapper.vault() == original_vault
+    assert token_in.allowance(swapper, crvusd_dummy_vault) == 0
+    assert token_in.allowance(swapper, original_vault) == MAX_UINT
+
+
+def test_swapper_operator_and_management_access(
+    swapper_v5,
+    gov,
+    management,
+    user,
+):
+    swapper = swapper_v5
+
+    with brownie.reverts("!ownerOrManagement"):
+        swapper.setOperator(user, True, {"from": user})
+    with brownie.reverts("!operator"):
+        swapper.enableOtc(True, {"from": user})
+
+    tx = swapper.setOperator(user, True, {"from": management})
+    assert tx.events["SetOperator"]["caller"] == user
+    assert tx.events["SetOperator"]["isAllowed"] is True
+    assert swapper.operator(user)
+
+    tx = swapper.enableOtc(True, {"from": user})
+    _assert_otc_enabled_event(tx, True)
+    assert swapper.otcEnabled()
+
+    tx = swapper.setOperator(user, False, {"from": gov})
+    assert tx.events["SetOperator"]["caller"] == user
+    assert tx.events["SetOperator"]["isAllowed"] is False
+    assert not swapper.operator(user)
+    with brownie.reverts("!operator"):
+        swapper.enableOtc(False, {"from": user})
+
+    tx = swapper.enableOtc(False, {"from": management})
+    _assert_otc_enabled_event(tx, False)
+    assert not swapper.otcEnabled()
+
+    with brownie.reverts("!owner"):
+        swapper.setManagement(user, {"from": management})
+
+    tx = swapper.setManagement(user, {"from": gov})
+    assert tx.events["SetManagement"]["management"] == user
+    assert swapper.management() == user
+    with brownie.reverts("!ownerOrManagement"):
+        swapper.setAllowedSwapper(user, True, {"from": management})
+    with brownie.reverts("!operator"):
+        swapper.enableOtc(True, {"from": management})
+
+    tx = swapper.enableOtc(True, {"from": user})
+    _assert_otc_enabled_event(tx, True)
+    assert swapper.otcEnabled()
+
+    tx = swapper.setManagement(management, {"from": gov})
+    assert tx.events["SetManagement"]["management"] == management
+    assert swapper.management() == management
+    with brownie.reverts("!operator"):
+        swapper.enableOtc(False, {"from": user})
+
+    tx = swapper.enableOtc(False, {"from": management})
+    _assert_otc_enabled_event(tx, False)
+    assert not swapper.otcEnabled()

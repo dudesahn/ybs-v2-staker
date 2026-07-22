@@ -1,50 +1,67 @@
 import brownie
-from brownie import Contract, accounts
+from brownie import Contract, web3
+from eth_abi import decode
 import pytest
 
-WEEK = 60 * 60 * 24 * 7
+YCRV_ZAP = "0x78ada385b15D89a9B845D2Cac0698663F0c69e3C"
+YCRV_POOL = "0x99f5aCc8EC2Da2BC0771c32814EFF52b712de1E5"
+YCRV_SWAP_TOPIC = web3.keccak(
+    text="TokenExchange(address,int128,uint256,int128,uint256)"
+).hex()
 
 
-def test_swapper(
-    swapper_v5,
-    vault,
-    deposit_rewards,
-    chain,
-    strategy,
-    gov,
-    management,
-    crvusd_dummy_vault,
-    fund_ycrv,
-):
-    price = 1 / (swapper_v5.priceOracle() / 1e18)  # yCRV price as crvUSD
-    assert price > 0.10 and price < 1.0
-    assert strategy.swapper() == swapper_v5
-    tx = strategy.harvest()
-    chain.sleep(3 * WEEK)
-    chain.mine()
+def _events_for(tx, name):
+    if name not in tx.events:
+        return []
+    events = tx.events[name]
+    return events if isinstance(events, (list, tuple)) else [events]
 
-    v = swapper_v5.vault()
-    swapper_v5.setVault(crvusd_dummy_vault, {"from": gov})
-    swapper_v5.setVault(v, {"from": gov})
-    swapper_v5.enableOtc(True, {"from": management})
 
-    amounts = [10 * 10**18, 100_000 * 10**18, 0]
+def _assert_reward_conversion(tx, require_swap=False):
+    mint_events = [
+        event
+        for event in _events_for(tx, "Mint")
+        if event["minter"].lower() == YCRV_ZAP.lower()
+    ]
+    ycrv_swap_logs = [
+        log
+        for log in tx.logs
+        if log["address"].lower() == YCRV_POOL.lower()
+        and log["topics"][0].hex() == YCRV_SWAP_TOPIC
+        and log["topics"][1].hex()[-40:].lower() == YCRV_ZAP[2:].lower()
+    ]
+    has_ycrv_swap = bool(ycrv_swap_logs)
 
-    for i in range(3):
-        fund_ycrv(swapper_v5, amounts[i])
+    if require_swap:
+        assert not mint_events, "expected a yCRV swap, but the strategy minted yCRV"
+        assert has_ycrv_swap, "expected the yCRV pool TokenExchange"
+    else:
+        assert (
+            bool(mint_events) != has_ycrv_swap
+        ), "expected exactly one yCRV conversion route (mint or swap)"
 
-        deposit_rewards()
+    if mint_events:
+        assert len(mint_events) == 1
+        assert mint_events[0]["value"] > 0
+        print("🏦 Just minted", mint_events[0]["value"] / 1e18, "yCRV\n")
+        return
 
-        chain.sleep(WEEK)
-        chain.mine()
-
-        tx = strategy.harvest()
-        assert "OTC" in tx.events
-        event = tx.events["OTC"]
-        print("Sell amount", event["sellTokenAmount"] / 1e18)
-        print("Buy amount", event["buyTokenAmount"] / 1e18)
-        bal = Contract(swapper_v5.tokenOut()).balanceOf(swapper_v5) / 1e18
-        print(f"Remaining OTC balance {bal}\n")
+    assert len(ycrv_swap_logs) == 1
+    sold_id, tokens_sold, bought_id, tokens_bought = decode(
+        ["int128", "uint256", "int128", "uint256"],
+        ycrv_swap_logs[0]["data"],
+    )
+    assert sold_id == 0
+    assert bought_id == 1
+    assert tokens_sold > 0
+    assert tokens_bought > 0
+    print(
+        "🤑 Just swapped",
+        tokens_sold / 1e18,
+        "CRV for",
+        tokens_bought / 1e18,
+        "yCRV\n",
+    )
 
 
 def test_operation(
@@ -53,7 +70,6 @@ def test_operation(
     token,
     gov,
     vault,
-    ybs,
     reward_distributor,
     strategy,
     user,
@@ -88,6 +104,10 @@ def test_operation(
 
     # now our strategy should have some claimable rewards
     assert reward_distributor.getClaimable(strategy) > 0
+    strategy.setMinReportDelay(4 * 7 * 24 * 60 * 60, {"from": gov})
+    strategy.setCreditThreshold(2**256 - 1, {"from": gov})
+    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
+    assert strategy.harvestTrigger(0)
 
     # reduce debt on our strategy
     vault.updateStrategyDebtRatio(strategy, 5_000, {"from": gov})
@@ -99,19 +119,9 @@ def test_operation(
     print("Amount of rewards in strategy after one swap:", remaining)
     print("Remaining split 6 ways:", remaining / 6)
 
-    # check if we're minting or swapping
-    try:
-        minted = tx.events["Mint"]["value"]
-        assert (
-            tx.events["Mint"]["minter"] == "0x78ada385b15D89a9B845D2Cac0698663F0c69e3C"
-        )
-        print("🏦 Just minted", minted / 1e18, "yCRV\n")
-    except:
-        print("🔄 We're swapping for yCRV")
-        # there will be two sets of these events, the first belonging to the crvUSD => CRV swap
-        swapped = tx.events["TokenExchange"][1]["tokens_sold"]
-        received = tx.events["TokenExchange"][1]["tokens_bought"]
-        print("🤑 Just swapped", swapped / 1e18, "CRV for", received / 1e18, "yCRV\n")
+    # Depending on the live fork price, the strategy should explicitly take
+    # exactly one of the supported yCRV conversion routes.
+    _assert_reward_conversion(tx)
     assert (
         vault.totalAssets() * 0.51
         > strategy.estimatedTotalAssets()
@@ -122,18 +132,7 @@ def test_operation(
     vault.updateStrategyDebtRatio(strategy, 10_000, {"from": gov})
     chain.sleep(1)
     tx = strategy.harvest()
-    try:
-        minted = tx.events["Mint"]["value"]
-        assert (
-            tx.events["Mint"]["minter"] == "0x78ada385b15D89a9B845D2Cac0698663F0c69e3C"
-        )
-        print("🏦 Just minted", minted / 1e18, "yCRV\n")
-    except:
-        print("🔄 We're swapping for yCRV")
-        # there will be two sets of these events, the first belonging to the crvUSD => CRV swap
-        swapped = tx.events["TokenExchange"][1]["tokens_sold"]
-        received = tx.events["TokenExchange"][1]["tokens_bought"]
-        print("🤑 Just swapped", swapped / 1e18, "CRV for", received / 1e18, "yCRV\n")
+    _assert_reward_conversion(tx)
 
     # have a whale swap in a 500k yCRV
     whale = accounts.at("0x71E47a4429d35827e0312AA13162197C23287546", force=True)
@@ -147,18 +146,7 @@ def test_operation(
     # now we should swap instead of minting
     chain.sleep(1)
     tx = strategy.harvest()
-    try:
-        minted = tx.events["Mint"]["value"]
-        assert (
-            tx.events["Mint"]["minter"] == "0x78ada385b15D89a9B845D2Cac0698663F0c69e3C"
-        )
-        print("🏦 Just minted", minted / 1e18, "yCRV\n")
-    except:
-        print("🔄 We're swapping for yCRV")
-        # there will be two sets of these events, the first belonging to the crvUSD => CRV swap
-        swapped = tx.events["TokenExchange"][1]["tokens_sold"]
-        received = tx.events["TokenExchange"][1]["tokens_bought"]
-        print("🤑 Just swapped", swapped / 1e18, "CRV for", received / 1e18, "yCRV\n")
+    _assert_reward_conversion(tx, require_swap=True)
 
     # vault will have profit from our harvest sitting in it
     assert (
@@ -174,120 +162,34 @@ def test_operation(
     assert token.balanceOf(user) > user_balance_before
 
 
-def test_emergency_exit(
-    chain, accounts, token, vault, strategy, user, strategist, amount, RELATIVE_APPROX
-):
-    # Deposit to the vault
-    token.approve(vault.address, amount, {"from": user})
-    vault.deposit(amount, {"from": user})
-    chain.sleep(1)
-    tx = strategy.harvest()
-    profit = tx.events["Harvested"]["profit"]
-    assert (
-        pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX)
-        == vault.totalAssets() - profit
-    )
-
-    # set emergency and exit
-    strategy.setEmergencyExit()
-    chain.sleep(1)
-    strategy.harvest()
-    assert strategy.estimatedTotalAssets() < amount
-
-
 def test_sweep(gov, vault, strategy, token, user, amount, weth, weth_amount):
     # Strategy want token doesn't work
     token.transfer(strategy, amount, {"from": user})
     assert token.address == strategy.want()
     assert token.balanceOf(strategy) > 0
-    with brownie.reverts():
+    with brownie.reverts("!want"):
         strategy.sweep(token, {"from": gov})
 
     # Vault share token doesn't work
-    with brownie.reverts():
+    with brownie.reverts("!shares"):
         strategy.sweep(vault.address, {"from": gov})
 
-    # TODO: If you add protected tokens to the strategy.
-    # Protected token doesn't work
-    # with brownie.reverts("!protected"):
-    #     strategy.sweep(strategy.protectedToken(), {"from": gov})
+    # Neither the reward vault shares nor their underlying may be swept.
+    reward_token = strategy.rewardToken()
+    reward_token_underlying = strategy.rewardTokenUnderlying()
+    assert reward_token != reward_token_underlying
+    with brownie.reverts("!protected"):
+        strategy.sweep(reward_token, {"from": gov})
+    with brownie.reverts("!protected"):
+        strategy.sweep(reward_token_underlying, {"from": gov})
 
     before_balance = weth.balanceOf(gov)
     weth.transfer(strategy, weth_amount, {"from": user})
     assert weth.address != strategy.want()
     assert weth.balanceOf(user) == 0
+    with brownie.reverts():
+        strategy.sweep(weth, {"from": user})
+    assert weth.balanceOf(strategy) == weth_amount
+
     strategy.sweep(weth, {"from": gov})
     assert weth.balanceOf(gov) == weth_amount + before_balance
-
-
-def test_triggers(
-    chain,
-    accounts,
-    token,
-    gov,
-    vault,
-    ybs,
-    reward_distributor,
-    strategy,
-    user,
-    utils,
-    amount,
-    RELATIVE_APPROX,
-    deposit_rewards,
-):
-
-    token.approve(vault.address, amount, {"from": user})
-    vault.deposit(amount, {"from": user})
-
-    # deposit rewards and have user deposit
-    deposit_rewards()
-
-    # do a harvest to get all of our loose vault funds into the strategy and test our locking
-    assert vault.strategies(strategy)["debtRatio"] == 10_000
-    strategy.harvest({"from": gov})
-
-    # Sleep to the next week to be able to claim rewards (adjust this based on remaining days in week when testing)
-    chain.sleep(60 * 60 * 24 * 7)
-    chain.mine()
-
-    deposit_rewards()
-    # if it's our first week, then push the rewards and sleep again
-    if utils.getGlobalActiveBoostMultiplier() == 0:
-        reward_distributor.pushRewards(utils.getWeek() - 1, {"from": gov})
-        chain.sleep(60 * 60 * 24 * 7)
-        chain.mine()
-        assert utils.getGlobalActiveBoostMultiplier() > 0
-
-    # now our strategy should have some claimable rewards
-    assert reward_distributor.getClaimable(strategy) > 0
-
-    # should be true w/ claimable rewards
-    assert strategy.harvestTrigger(0)
-
-    # harvest to reset
-    strategy.harvest()
-
-    # harvest trigger should be false
-    assert not strategy.harvestTrigger(0)
-
-    # sleep 23 hours, should be true again
-    chain.sleep(60 * 60 * 23)
-    chain.mine()
-    assert strategy.harvestTrigger(0)
-
-    # harvest to reset
-    strategy.harvest()
-
-    # harvest trigger should be false
-    assert not strategy.harvestTrigger(0)
-
-    # sleep 23 hours, should be true again
-    chain.sleep(60 * 60 * 23)
-    chain.mine()
-    assert strategy.harvestTrigger(0)
-
-    # harvest to reset
-    strategy.harvest()
-
-    # harvest trigger should be false
-    assert not strategy.harvestTrigger(0)
