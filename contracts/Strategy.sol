@@ -18,6 +18,12 @@ interface IERC4626 {
     ) external returns (uint256);
 }
 
+interface IFeeVault {
+    function rewards() external view returns (address);
+
+    function performanceFee() external view returns (uint256);
+}
+
 interface IStrategyProxy {
     function lock() external;
 
@@ -38,6 +44,12 @@ contract Strategy is BaseStrategy {
     IERC20 public immutable rewardTokenUnderlying;
     IStrategyProxy public constant proxy =
         IStrategyProxy(0x78eDcb307AC1d1F8F5Fd070B377A6e69C8dcFC34);
+    address public feeRecipient = 0x044F9C86a0Da637a235E83564215DC271Bc0deFc;
+
+    event FeeRecipientUpdated(
+        address indexed previousRecipient,
+        address indexed newRecipient
+    );
 
     struct SwapThresholds {
         uint112 min;
@@ -130,7 +142,17 @@ contract Strategy is BaseStrategy {
 
         SwapThresholds memory st = swapThresholds;
         uint256 rewardBalance = balanceOfReward();
+        bool isFeeModeActive = feeModeActive();
+
         if (rewardBalance > st.min) {
+            // Take the fee in yield-bearing crvUSD vault shares.
+            if (isFeeModeActive) {
+                uint256 fee = IFeeVault(address(vault)).performanceFee();
+                uint256 feeShares = (rewardBalance * fee) / 10_000;
+                rewardToken.safeTransfer(feeRecipient, feeShares);
+                rewardBalance -= feeShares;
+            }
+
             // Redeem the full balance at once to avoid unnecessary costly withdrawals.
             uint256 output = IERC4626(address(rewardToken)).redeem(
                 rewardBalance,
@@ -142,6 +164,15 @@ contract Strategy is BaseStrategy {
                 // use our weekly output to set how much we max sell each time (make sure we get it all in 7 days)
                 st.max = uint112((output * 101) / 700);
                 swapThresholds.max = st.max;
+            }
+        }
+
+        // Refund the previous report's yvyCRV fee shares only while the full
+        // replacement-fee configuration is active.
+        if (isFeeModeActive) {
+            uint256 vaultShares = vault.balanceOf(address(this));
+            if (vaultShares > 0) {
+                vault.withdraw(vaultShares, address(this));
             }
         }
 
@@ -157,6 +188,12 @@ contract Strategy is BaseStrategy {
                 ybs.stakeAsMaxWeighted(address(this), profit);
             }
         }
+    }
+
+    function feeModeActive() public view returns (bool) {
+        return
+            IFeeVault(address(vault)).rewards() == address(this) &&
+            rewards == address(this);
     }
 
     // use this during a migration to maintain the strategy's previous boost
@@ -256,6 +293,14 @@ contract Strategy is BaseStrategy {
         rewardDistributor.approveClaimer(_claimer, _approved);
     }
 
+    function setFeeRecipient(
+        address _recipient
+    ) external onlyVaultManagers {
+        require(_recipient != address(0), "!recipient");
+        emit FeeRecipientUpdated(feeRecipient, _recipient);
+        feeRecipient = _recipient;
+    }
+
     function setSwapThresholds(
         uint256 _swapThresholdMin,
         uint256 _swapThresholdMax,
@@ -307,6 +352,15 @@ contract Strategy is BaseStrategy {
     function prepareMigration(address _newStrategy) internal override {
         uint256 amount = balanceOfStaked();
         if (amount > 1) ybs.unstake(amount, _newStrategy);
+        amount = vault.balanceOf(address(this));
+        if (amount > 0) {
+            // Migrate only `want`, not shares that the replacement may not
+            // understand. A Vault withdrawal can be partial when liquidity is
+            // unavailable, so require a complete redemption or revert the
+            // migration atomically.
+            vault.withdraw(amount, address(this));
+            require(vault.balanceOf(address(this)) == 0, "!vault shares");
+        }
         amount = rewardToken.balanceOf(address(this));
         if (amount > 0) rewardToken.safeTransfer(_newStrategy, amount);
         amount = rewardTokenUnderlying.balanceOf(address(this));

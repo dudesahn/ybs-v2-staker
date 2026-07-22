@@ -36,6 +36,15 @@ interface IRewardDistributor {
 
     function rewardToken() external view returns (address);
 
+    function accountInfo(
+        address _account
+    ) external view returns (address recipient, uint96 lastClaimWeek);
+
+    function approvedClaimer(
+        address _account,
+        address _claimer
+    ) external view returns (bool approved);
+
     function depositReward(uint _amount) external;
 
     function depositRewardFrom(address _target, uint _amount) external;
