@@ -88,8 +88,10 @@ def test_migration(
 
     token.approve(vault.address, amount, {"from": user})
     vault.deposit(amount, {"from": user})
+    operation_shares = vault.balanceOf(user) - user_shares_before_deposit
 
     assert token.balanceOf(user) == user_balance_before_deposit - amount
+    assert operation_shares > 0
     assert vault.totalAssets() == vault_assets_before_deposit + amount
 
     chain.sleep(1)
@@ -135,15 +137,18 @@ def test_migration(
     # tranche so migration must redeem that balance without reducing the user's
     # original deposit shares used by the withdrawal assertion below.
     parent_share_assets = 100 * 10 ** token.decimals()
-    fund_ycrv(user, parent_share_assets)
-    token.approve(vault, parent_share_assets, {"from": user})
+    parent_liquidity = 2 * parent_share_assets
+    assert vault.balanceOf(strategy) == 0
+    fund_ycrv(user, parent_liquidity)
+    token.approve(vault, parent_liquidity, {"from": user})
     user_vault_shares_before = vault.balanceOf(user)
-    vault.deposit(parent_share_assets, {"from": user})
-    parent_shares_to_stage = vault.balanceOf(user) - user_vault_shares_before
+    vault.deposit(parent_liquidity, {"from": user})
+    parent_shares_minted = vault.balanceOf(user) - user_vault_shares_before
+    parent_shares_to_stage = parent_shares_minted // 2
     assert parent_shares_to_stage > 0
     vault.transfer(strategy, parent_shares_to_stage, {"from": user})
     old_vault_shares = vault.balanceOf(strategy)
-    assert old_vault_shares >= parent_shares_to_stage
+    assert old_vault_shares == parent_shares_to_stage
 
     # The replacement must use the current SwapperV5 integration and be empty
     # before the Vault entrusts it with the old strategy's accounting record.
@@ -157,11 +162,16 @@ def test_migration(
     vault_debt_before_migration = vault.totalDebt()
     vault_debt_ratio_before_migration = vault.debtRatio()
     vault_supply_before_migration = vault.totalSupply()
-    expected_parent_assets = (
-        old_vault_shares
-        * vault_assets_before_migration
-        // vault_supply_before_migration
+    # V2 withdrawals use free funds (total assets less locked profit), exposed
+    # through pricePerShare(). Using totalAssets / totalSupply here would
+    # overstate the redeemable value whenever the Vault has locked profit.
+    estimated_parent_assets_before_migration = (
+        old_vault_shares * vault.pricePerShare() // 10 ** vault.decimals()
     )
+    accounted_idle_before_migration = (
+        vault_assets_before_migration - vault_debt_before_migration
+    )
+    assert accounted_idle_before_migration > estimated_parent_assets_before_migration
 
     vault.migrateStrategy(strategy, new_strategy, {"from": gov})
 
@@ -179,13 +189,12 @@ def test_migration(
     )
     assert new_params["totalGain"] == 0
     assert new_params["totalLoss"] == 0
-    # Redeeming self-held shares removes their gross claim from total assets.
-    # If idle is insufficient, the Vault may also reduce other strategy debt
-    # while sourcing liquidity, but it must never increase aggregate debt.
+    # Redeeming self-held shares burns them. If idle is insufficient, the Vault
+    # may also reduce other strategy debt while sourcing liquidity, but it must
+    # never increase aggregate debt.
     assert vault.totalDebt() <= vault_debt_before_migration
     assert vault.debtRatio() == vault_debt_ratio_before_migration
     assert vault.totalSupply() == vault_supply_before_migration - old_vault_shares
-    assert vault.totalAssets() == vault_assets_before_migration - expected_parent_assets
 
     # Every persistent balance is transferred and the old strategy is fully
     # drained. Want that was staked is unstaked directly to the replacement.
@@ -195,15 +204,24 @@ def test_migration(
     assert reward_underlying.balanceOf(strategy) == 0
     assert vault.balanceOf(strategy) == 0
     assert vault.balanceOf(new_strategy) == 0
-    redeemed_parent_assets = (
-        new_strategy.balanceOfWant() - old_want - old_staked
-    )
+    redeemed_parent_assets = new_strategy.balanceOfWant() - old_want - old_staked
     assert redeemed_parent_assets > 0
-    assert redeemed_parent_assets <= expected_parent_assets
-    assert (
-        expected_parent_assets - redeemed_parent_assets
-        <= expected_parent_assets // 10_000
+    # The migration is mined in a later block, so some additional locked profit
+    # can unlock after the pre-migration PPS was sampled. A proportional burn at
+    # the execution-block PPS leaves that PPS unchanged, making the post-burn
+    # value the accurate reference for the amount that was redeemed.
+    expected_parent_assets = (
+        old_vault_shares * vault.pricePerShare() // 10 ** vault.decimals()
     )
+    # pricePerShare rounds before this test multiplies by the share balance,
+    # while the Vault's internal share-value calculation multiplies first.
+    pps_rounding_tolerance = (old_vault_shares // 10 ** vault.decimals()) + 1
+    assert (
+        abs(redeemed_parent_assets - expected_parent_assets) <= pps_rounding_tolerance
+    )
+    # Migration only moves the strategy debt record; the nested withdrawal is
+    # the sole outflow, so total assets must fall by the want actually redeemed.
+    assert vault.totalAssets() == vault_assets_before_migration - redeemed_parent_assets
     assert (
         abs(
             new_strategy.balanceOfWant()
@@ -223,9 +241,8 @@ def test_migration(
     assert strategy.address not in withdrawal_queue
 
     # The migrated position remains liquid through the replacement strategy.
-    user_shares = vault.balanceOf(user) - user_shares_before_deposit
     user_balance_before_withdraw = token.balanceOf(user)
-    vault.withdraw(user_shares, user, {"from": user})
+    vault.withdraw(operation_shares, user, {"from": user})
     recovered = token.balanceOf(user) - user_balance_before_withdraw
     tolerated_loss = max(2, int(amount * RELATIVE_APPROX))
     assert recovered >= amount - tolerated_loss

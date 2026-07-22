@@ -97,7 +97,7 @@ def test_reward_fee_requires_both_rewards_addresses(
     )
 
 
-def test_vault_fee_shares_are_unwrapped_on_next_harvest(
+def test_vault_fee_shares_recycle_while_fee_remains_active(
     accounts,
     chain,
     strategy,
@@ -120,18 +120,27 @@ def test_vault_fee_shares_are_unwrapped_on_next_harvest(
 
     strategy.harvest({"from": gov})
 
-    shares_to_unwrap = vault.balanceOf(strategy)
-    assert shares_to_unwrap > 0
+    parent_shares = vault.balanceOf(strategy)
+    assert parent_shares > 0
+    recipient_reward_shares = reward_token.balanceOf(fee_recipient)
+    assert recipient_reward_shares > 0
 
-    vault.setPerformanceFee(0, {"from": gov})
-    supply_before = vault.totalSupply()
-    chain.sleep(1)
-    chain.mine()
+    # Keep the fee configuration active. Each report redeems the prior report's
+    # parent-vault shares, then the Vault mints a smaller performance-fee claim
+    # against that recycled profit. This is the intended geometric tail.
+    for _ in range(2):
+        shares_before = parent_shares
+        supply_before = vault.totalSupply()
+        chain.sleep(1)
+        chain.mine()
 
-    strategy.harvest({"from": gov})
+        strategy.harvest({"from": gov})
 
-    assert vault.balanceOf(strategy) == 0
-    assert supply_before - vault.totalSupply() == shares_to_unwrap
+        parent_shares = vault.balanceOf(strategy)
+        assert 0 < parent_shares < shares_before
+        assert reward_token.balanceOf(fee_recipient) == recipient_reward_shares
+        assert strategy.balanceOfReward() == 0
+        assert supply_before - vault.totalSupply() == shares_before - parent_shares
 
 
 def test_set_fee_recipient_access_and_event(strategy, vault, accounts, gov):
