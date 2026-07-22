@@ -20,7 +20,6 @@ def _mine_at(chain, timestamp):
 
 def _reset_trigger_state(strategy, vault, gov):
     """Clear every trigger and report once to establish a quiet baseline."""
-    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
     strategy.setMinReportDelay(4 * WEEK, {"from": gov})
     strategy.setCreditThreshold(MAX_UINT256, {"from": gov})
     strategy.setForceHarvestTriggerOnce(False, {"from": gov})
@@ -108,15 +107,8 @@ def test_unacceptable_base_fee_blocks_forced_trigger(
 
 def test_min_report_delay_uses_strict_boundary(chain, gov, vault, strategy):
     _reset_trigger_state(strategy, vault, gov)
-    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
 
     min_report_delay = 60 * 60
-    now = _latest_timestamp(chain)
-    week_end = (now // WEEK + 1) * WEEK
-    if week_end - now <= min_report_delay + 60:
-        _mine_at(chain, week_end + 1)
-        strategy.harvest({"from": gov})
-
     strategy.setMinReportDelay(min_report_delay, {"from": gov})
     last_report = vault.strategies(strategy)["lastReport"]
 
@@ -129,7 +121,7 @@ def test_min_report_delay_uses_strict_boundary(chain, gov, vault, strategy):
     assert strategy.harvestTrigger(0)
 
 
-def test_week_end_window_bypasses_base_fee_for_positive_credit(
+def test_week_end_lock_window_does_not_override_trigger_checks(
     chain,
     token,
     gov,
@@ -141,39 +133,41 @@ def test_week_end_window_bypasses_base_fee_for_positive_credit(
     MockBaseFeeOracle,
 ):
     starting_credit = _reset_trigger_state(strategy, vault, gov)
-    oracle = strategist.deploy(MockBaseFeeOracle, False)
-    strategy.setBaseFeeOracle(oracle, {"from": gov})
-    assert not strategy.isBaseFeeAcceptable()
     now = _latest_timestamp(chain)
     week_end = (now // WEEK + 1) * WEEK
+    lock_window = strategy.weekEndLockWindow()
+    assert lock_window == 2 * 24 * 60 * 60
 
-    # Keep the boundary in the current reward week so no claimable rewards can
-    # appear while this test advances time. If necessary, start a fresh week.
-    if week_end - now <= 10 * 60:
+    # Start a fresh Curve week when the fork begins inside the lock window, so
+    # the last report is unambiguously outside the next lock window.
+    if week_end - now <= lock_window:
         _mine_at(chain, week_end + 1)
         strategy.harvest({"from": gov})
         starting_credit = vault.creditAvailable({"from": strategy})
         week_end += WEEK
 
-    boundary_lead_time = 5 * 60
-    custom_window = week_end - _latest_timestamp(chain) - boundary_lead_time
+    oracle = strategist.deploy(MockBaseFeeOracle, False)
+    strategy.setBaseFeeOracle(oracle, {"from": gov})
+    assert not strategy.isBaseFeeAcceptable()
+
     deposit = 100 * 10 ** token.decimals()
     credit_threshold = starting_credit + deposit
 
-    strategy.setWeekEndHarvestTrigger(custom_window, {"from": gov})
     strategy.setCreditThreshold(credit_threshold, {"from": gov})
     _fund_and_approve(token, vault, user, fund_ycrv, deposit)
     vault.deposit(deposit, {"from": user})
 
     available_credit = vault.creditAvailable({"from": strategy})
     assert 0 < available_credit == credit_threshold
-    assert week_end - vault.strategies(strategy)["lastReport"] > custom_window
+    assert week_end - vault.strategies(strategy)["lastReport"] > lock_window
 
-    window_start = week_end - custom_window
+    window_start = week_end - lock_window
     _mine_at(chain, window_start - 1)
-    assert week_end - _latest_timestamp(chain) == custom_window + 1
+    assert not strategy.isNearWeekEnd()
     assert not strategy.harvestTrigger(0)
 
     _mine_at(chain, window_start)
-    assert week_end - _latest_timestamp(chain) == custom_window
-    assert strategy.harvestTrigger(0)
+    assert strategy.isNearWeekEnd()
+    # Near-week-end status only gates proxy maintenance in prepareReturn; it no
+    # longer bypasses base-fee or normal trigger checks.
+    assert not strategy.harvestTrigger(0)

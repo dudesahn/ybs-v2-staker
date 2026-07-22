@@ -54,16 +54,16 @@ def test_custom_setters_enforce_manager_access_and_bounds(
     assert not strategy.bypassClaim()
     assert not strategy.bypassMaxStake()
 
-    original_week_end_threshold = strategy.thresholdTimeUntilWeekEnd()
+    assert strategy.weekEndLockWindow() == 2 * 24 * 60 * 60
     with brownie.reverts():
-        strategy.setWeekEndHarvestTrigger(0, {"from": attacker})
+        strategy.setWeekEndLockWindow(0, {"from": attacker})
     with brownie.reverts("Too High"):
-        strategy.setWeekEndHarvestTrigger(WEEK, {"from": gov})
-    assert strategy.thresholdTimeUntilWeekEnd() == original_week_end_threshold
-    strategy.setWeekEndHarvestTrigger(WEEK - 1, {"from": management})
-    assert strategy.thresholdTimeUntilWeekEnd() == WEEK - 1
-    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
-    assert strategy.thresholdTimeUntilWeekEnd() == 0
+        strategy.setWeekEndLockWindow(WEEK, {"from": gov})
+    assert strategy.weekEndLockWindow() == 2 * 24 * 60 * 60
+    strategy.setWeekEndLockWindow(WEEK - 1, {"from": management})
+    assert strategy.weekEndLockWindow() == WEEK - 1
+    strategy.setWeekEndLockWindow(0, {"from": gov})
+    assert strategy.weekEndLockWindow() == 0
 
     assert not reward_distributor.approvedClaimer(strategy, claimer)
     with brownie.reverts():

@@ -106,7 +106,6 @@ def test_operation(
     assert reward_distributor.getClaimable(strategy) > 0
     strategy.setMinReportDelay(4 * 7 * 24 * 60 * 60, {"from": gov})
     strategy.setCreditThreshold(2**256 - 1, {"from": gov})
-    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
     assert strategy.harvestTrigger(0)
 
     # reduce debt on our strategy
