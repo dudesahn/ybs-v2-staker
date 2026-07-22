@@ -83,6 +83,29 @@ def test_force_trigger_is_consumed_by_harvest(gov, vault, strategy):
     assert not strategy.harvestTrigger(0)
 
 
+def test_unacceptable_base_fee_blocks_forced_trigger(
+    gov,
+    strategist,
+    vault,
+    strategy,
+    MockBaseFeeOracle,
+):
+    _reset_trigger_state(strategy, vault, gov)
+    oracle = strategist.deploy(MockBaseFeeOracle, False)
+    strategy.setBaseFeeOracle(oracle, {"from": gov})
+    strategy.setForceHarvestTriggerOnce(True, {"from": gov})
+
+    assert not strategy.isBaseFeeAcceptable()
+    assert not strategy.harvestTrigger(0)
+    assert not strategy.harvestTrigger(MAX_UINT256)
+
+    oracle.setAcceptable(True, {"from": strategist})
+
+    assert strategy.isBaseFeeAcceptable()
+    assert strategy.harvestTrigger(0)
+    assert strategy.harvestTrigger(MAX_UINT256)
+
+
 def test_min_report_delay_uses_strict_boundary(chain, gov, vault, strategy):
     _reset_trigger_state(strategy, vault, gov)
     strategy.setWeekEndHarvestTrigger(0, {"from": gov})
@@ -106,16 +129,21 @@ def test_min_report_delay_uses_strict_boundary(chain, gov, vault, strategy):
     assert strategy.harvestTrigger(0)
 
 
-def test_custom_week_end_window_triggers_on_any_positive_credit(
+def test_week_end_window_bypasses_base_fee_for_positive_credit(
     chain,
     token,
     gov,
     vault,
     strategy,
+    strategist,
     user,
     fund_ycrv,
+    MockBaseFeeOracle,
 ):
     starting_credit = _reset_trigger_state(strategy, vault, gov)
+    oracle = strategist.deploy(MockBaseFeeOracle, False)
+    strategy.setBaseFeeOracle(oracle, {"from": gov})
+    assert not strategy.isBaseFeeAcceptable()
     now = _latest_timestamp(chain)
     week_end = (now // WEEK + 1) * WEEK
 
