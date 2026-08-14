@@ -2,10 +2,7 @@
 pragma solidity ^0.8.18;
 
 // These are the core Yearn libraries
-import {
-    BaseStrategy,
-    StrategyParams
-} from "@yearnvaults/contracts/BaseStrategy.sol";
+import {BaseStrategy, StrategyParams} from "@yearnvaults/contracts/BaseStrategy.sol";
 import {IERC20, SafeERC20} from "@yearnvaults/contracts/BaseStrategy.sol";
 import {ISwapper} from "./interfaces/ISwapper.sol";
 import {IRewardDistributor} from "./interfaces/IRewardDistributor.sol";
