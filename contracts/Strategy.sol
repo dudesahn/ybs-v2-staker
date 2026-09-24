@@ -356,14 +356,7 @@ contract Strategy is BaseStrategy {
         uint256 amount = balanceOfStaked();
         if (amount > 1) ybs.unstake(amount, _newStrategy);
         amount = vault.balanceOf(address(this));
-        if (amount > 0) {
-            // Migrate only `want`, not shares that the replacement may not
-            // understand. A Vault withdrawal can be partial when liquidity is
-            // unavailable, so require a complete redemption or revert the
-            // migration atomically.
-            vault.withdraw(amount, address(this));
-            require(vault.balanceOf(address(this)) == 0, "!vault shares");
-        }
+        if (amount > 0) vault.safeTransfer(_newStrategy, amount);
         amount = rewardToken.balanceOf(address(this));
         if (amount > 0) rewardToken.safeTransfer(_newStrategy, amount);
         amount = rewardTokenUnderlying.balanceOf(address(this));
