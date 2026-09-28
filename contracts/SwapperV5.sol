@@ -144,7 +144,10 @@ contract SwapperV5 {
     function swap(uint _amount) external returns (uint profit) {
         tokenIn.safeTransferFrom(msg.sender, address(this), _amount);
         if (otcEnabled) (profit, _amount) = _sellOtc(_amount);
-        if (_amount < PRECISION) return profit;
+        if (_amount < PRECISION) {
+            if (_amount > 0) tokenIn.safeTransfer(msg.sender, _amount);
+            return profit;
+        }
         uint out = pool1.exchange_underlying(
             pool1InTokenIdx,
             pool1OutTokenIdx,
@@ -187,6 +190,9 @@ contract SwapperV5 {
                     amountToSell = (PRECISION * buyTokenBalance) / price;
                 }
             }
+        }
+        if (amountToSell == 0 || amountToBuy == 0) {
+            return (0, _sellTokenAmount);
         }
         buyToken.safeTransfer(msg.sender, amountToBuy);
         vault.deposit(amountToSell, treasury);

@@ -1,4 +1,5 @@
 import brownie
+import pytest
 from brownie import Contract
 
 
@@ -51,6 +52,136 @@ def _assert_otc_event(tx):
 
 def _assert_otc_enabled_event(tx, enabled):
     assert tx.events["OTCEnabled"]["enabled"] is enabled
+
+
+@pytest.fixture
+def loose_crvusd(reward_token, user, crvusd_whale):
+    token_in = Contract(reward_token.asset())
+    reward_token.redeem(reward_token.balanceOf(user), user, user, {"from": user})
+    assert token_in.balanceOf(user) >= 1_000 * PRECISION
+    return token_in
+
+
+@pytest.mark.parametrize("with_inventory", [False, True])
+def test_current_strategy_uses_market_after_otc_inventory_runs_out(
+    strategy,
+    swapper_v5,
+    vault,
+    token,
+    loose_crvusd,
+    user,
+    gov,
+    management,
+    fund_ycrv,
+    chain,
+    with_inventory,
+):
+    swapper = swapper_v5
+    treasury_vault = Contract(swapper.vault())
+    strategy.setBypasses(True, True, {"from": gov})
+    strategy.setSwapThresholds(0, 1_000_000 * PRECISION, False, {"from": gov})
+    strategy.setWeekEndLockWindow(0, {"from": gov})
+    strategy.harvest({"from": gov})
+    assert strategy.balanceOfReward() == 0
+    assert loose_crvusd.balanceOf(strategy) < PRECISION
+    assert vault.balanceOf(swapper) == 0
+    assert token.balanceOf(swapper) == 0
+
+    swapper.enableOtc(True, {"from": management})
+    if with_inventory:
+        # Enough for only a quarter of the next sale, with the rest going to market.
+        fund_ycrv(swapper, 25 * swapper.priceOracle())
+
+    for sale in range(2):
+        loose_crvusd.transfer(strategy, 100 * PRECISION, {"from": user})
+        inventory_before = token.balanceOf(swapper)
+        treasury_before = treasury_vault.balanceOf(swapper.treasury())
+        params_before = vault.strategies(strategy)
+
+        # The vault rejects two fee assessments at the same timestamp.
+        chain.sleep(1)
+        chain.mine()
+        tx = strategy.harvest({"from": gov})
+
+        if with_inventory and sale == 0:
+            event = _assert_otc_event(tx)
+            assert event["buyTokenAmount"] == inventory_before
+            assert treasury_vault.balanceOf(swapper.treasury()) > treasury_before
+        else:
+            assert "OTC" not in tx.events
+            assert treasury_vault.balanceOf(swapper.treasury()) == treasury_before
+
+        assert token.balanceOf(swapper) == 0
+        assert loose_crvusd.balanceOf(swapper) == 0
+        assert loose_crvusd.balanceOf(strategy) == 0
+        assert vault.strategies(strategy)["totalGain"] > params_before["totalGain"]
+        assert vault.strategies(strategy)["totalLoss"] == params_before["totalLoss"]
+
+
+@pytest.mark.parametrize("otc_enabled", [False, True])
+@pytest.mark.parametrize("amount", [0, 1, PRECISION - 1])
+def test_swapper_refunds_input_below_market_minimum(
+    swapper_v5,
+    loose_crvusd,
+    token,
+    user,
+    management,
+    otc_enabled,
+    amount,
+):
+    swapper = swapper_v5
+    treasury_vault = Contract(swapper.vault())
+    swapper.setAllowedSwapper(user, True, {"from": management})
+    swapper.enableOtc(otc_enabled, {"from": management})
+    loose_crvusd.approve(swapper, MAX_UINT, {"from": user})
+    # A refund belongs only to the current caller; pre-existing funds stay put.
+    stranded = 3 * PRECISION
+    loose_crvusd.transfer(swapper, stranded, {"from": user})
+    input_before = loose_crvusd.balanceOf(user)
+    output_before = token.balanceOf(user)
+    treasury_before = treasury_vault.balanceOf(swapper.treasury())
+
+    tx = swapper.swap(amount, {"from": user})
+
+    assert tx.return_value == 0
+    assert "OTC" not in tx.events
+    assert loose_crvusd.balanceOf(user) == input_before
+    assert loose_crvusd.balanceOf(swapper) == stranded
+    assert token.balanceOf(user) == output_before
+    assert treasury_vault.balanceOf(swapper.treasury()) == treasury_before
+
+
+def test_swapper_refunds_dust_after_partial_otc_fill(
+    swapper_v5,
+    loose_crvusd,
+    token,
+    user,
+    management,
+    fund_ycrv,
+):
+    swapper = swapper_v5
+    treasury_vault = Contract(swapper.vault())
+    swapper.setAllowedSwapper(user, True, {"from": management})
+    swapper.enableOtc(True, {"from": management})
+    loose_crvusd.approve(swapper, MAX_UINT, {"from": user})
+    amount = 10 * PRECISION
+    inventory = (amount - PRECISION // 2) * swapper.priceOracle() // PRECISION
+    fund_ycrv(swapper, inventory)
+    input_before = loose_crvusd.balanceOf(user)
+    output_before = token.balanceOf(user)
+    treasury_before = treasury_vault.balanceOf(swapper.treasury())
+
+    tx = swapper.swap(amount, {"from": user})
+
+    event = _assert_otc_event(tx)
+    remainder = amount - event["sellTokenAmount"]
+    assert 0 < remainder < PRECISION
+    assert tx.return_value == event["buyTokenAmount"] == inventory
+    assert input_before - loose_crvusd.balanceOf(user) == event["sellTokenAmount"]
+    assert token.balanceOf(user) - output_before == inventory
+    assert loose_crvusd.balanceOf(swapper) == 0
+    assert token.balanceOf(swapper) == 0
+    assert treasury_vault.balanceOf(swapper.treasury()) > treasury_before
 
 
 def test_swapper(
