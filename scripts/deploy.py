@@ -4,7 +4,9 @@ For brownie-safe, call ``setup(STRATEGY, safe.account)`` and build the
 multisend from the resulting receipts in the multisig repository.
 """
 
-from brownie import Contract, Strategy, SwapperV5, accounts, chain, interface
+from brownie import Strategy, accounts, chain
+
+from scripts.contract_helpers import deployed_contract
 
 
 VAULT = "0x27B5739e22ad9033bcBf192059122d163b60349D"
@@ -44,11 +46,18 @@ def main(publish_source=True):
     """Deploy and perform every setup transaction available to the strategist."""
     assert chain.id == 1
     deployer = accounts.load(DEPLOYER_ACCOUNT)
-    vault = Contract(VAULT)
-    old_strategy = Strategy.at(OLD_STRATEGY)
-    ybs = interface.IYearnBoostedStaker(YBS)
-    reward_distributor = interface.IRewardDistributor(REWARD_DISTRIBUTOR)
-    swapper = SwapperV5.at(SWAPPER_V5)
+    vault = deployed_contract(VAULT, "strategies", "balanceOf")
+    old_strategy = deployed_contract(
+        OLD_STRATEGY,
+        "swapper",
+        "keeper",
+        "strategist",
+        "minReportDelay",
+        "maxReportDelay",
+    )
+    ybs = deployed_contract(YBS, "MAX_STAKE_GROWTH_WEEKS")
+    reward_distributor = deployed_contract(REWARD_DISTRIBUTOR, "staker", "rewardToken")
+    swapper = deployed_contract(SWAPPER_V5, "tokenIn", "tokenOut")
 
     assert old_strategy.swapper() == swapper.address
     assert reward_distributor.staker() == ybs.address
@@ -75,11 +84,40 @@ def setup(strategy_address, sender=GOVERNANCE):
     """Execute the ordered governance migration calls using brownie receipts."""
     assert chain.id == 1
     sender = _account(sender)
-    vault = Contract(VAULT)
-    strategy = Strategy.at(strategy_address)
-    old_strategy = Strategy.at(OLD_STRATEGY)
-    ybs = interface.IYearnBoostedStaker(YBS)
-    proxy = Contract(STRATEGY_PROXY)
+    vault = deployed_contract(
+        VAULT,
+        "governance",
+        "managementFee",
+        "performanceFee",
+        "rewards",
+        "strategies",
+        "balanceOf",
+        "migrateStrategy",
+        "setRewards",
+    )
+    strategy = deployed_contract(
+        strategy_address,
+        "vault",
+        "ybs",
+        "rewardDistributor",
+        "swapper",
+        "feeRecipient",
+        "rewards",
+        "keeper",
+        "strategist",
+        "estimatedTotalAssets",
+        "feeModeActive",
+        "setCreditThreshold",
+        "setBaseFeeOracle",
+        "manualStakeAsMaxWeighted",
+        "balanceOfStaked",
+        "balanceOfWant",
+    )
+    old_strategy = deployed_contract(
+        OLD_STRATEGY, "keeper", "strategist", "baseFeeOracle", "harvest"
+    )
+    ybs = deployed_contract(YBS, "owner", "setWeightedStaker", "approvedWeightedStaker")
+    proxy = deployed_contract(STRATEGY_PROXY, "governance", "approveLocker", "lockers")
 
     assert sender.address == GOVERNANCE
     assert vault.governance() == ybs.owner() == proxy.governance() == sender.address
