@@ -1,2 +1,4 @@
-black==22.10.0
-eth-brownie>=1.19.2,<2.0.0
+black==25.1.0
+eth-brownie==1.21.0
+# Brownie's Web3 dependency still imports pkg_resources.
+setuptools==80.9.0

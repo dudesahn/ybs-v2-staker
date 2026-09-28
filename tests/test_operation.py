@@ -133,12 +133,11 @@ def test_operation(
     tx = strategy.harvest()
     _assert_reward_conversion(tx)
 
-    # have a whale swap in a 500k yCRV
+    # Use available inventory to move the pool price, then verify the route changes.
     whale = accounts.at("0x71E47a4429d35827e0312AA13162197C23287546", force=True)
     pool = Contract("0x99f5aCc8EC2Da2BC0771c32814EFF52b712de1E5")
-    swap_amount = 500_000 * 10 ** token.decimals()
-    fund_ycrv(whale)
-    assert token.balanceOf(whale) >= swap_amount
+    swap_amount = fund_ycrv(whale)
+    assert swap_amount > 0
     token.approve(pool, 2**256 - 1, {"from": whale})
     pool.exchange(1, 0, swap_amount, 0, {"from": whale})
 

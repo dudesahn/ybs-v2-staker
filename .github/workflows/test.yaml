@@ -7,58 +7,36 @@ on:
       - develop
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v1
-
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install Anvil
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.5.1
       - name: Cache compiler installations
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: |
             ~/.solcx
             ~/.vvm
-          key: ${{ runner.os }}-compiler-cache
-
-      - name: Setup node.js
-        uses: actions/setup-node@v1
-        with:
-          node-version: "14.x"
-
-      - name: Install ganache
-        run: npm install -g ganache-cli
-
-      - name: Set up python 3.8
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.8
-
-      - name: Set pip cache directory path
-        id: pip-cache-dir-path
-        run: |
-          echo "::set-output name=dir::$(pip cache dir)"
-
-      - name: Restore pip cache
-        uses: actions/cache@v2
-        id: pip-cache
-        with:
-          path: |
-            ${{ steps.pip-cache-dir-path.outputs.dir }}
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements-dev.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ hashFiles('**/requirements-dev.txt') }}
-            ${{ runner.os }}-pip-
-
-      - name: Install python dependencies
+          key: ${{ runner.os }}-compiler-${{ hashFiles('brownie-config.yml') }}
+      - name: Install Python dependencies
         run: pip install -r requirements-dev.txt
-
-      - name: Compile Code
+      - name: Compile contracts
         run: brownie compile --size
-
-      - name: Run Tests
+      - name: Run tests at the fixed mainnet baseline
         env:
-          ETHERSCAN_TOKEN: MW5CQA6QK5YMJXP2WP3RA36HM5A7RA1IHA
-          WEB3_INFURA_PROJECT_ID: b7821200399e4be2b4e5dbdf06fbe85b
-        run: brownie test
+          ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+        run: bash .github/scripts/run-fork-tests.sh
