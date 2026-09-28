@@ -36,6 +36,7 @@ def _fund_and_approve(token, vault, user, fund_ycrv, amount):
 
 
 def test_credit_threshold_is_strict_and_resets_after_harvest(
+    chain,
     token,
     gov,
     vault,
@@ -65,18 +66,22 @@ def test_credit_threshold_is_strict_and_resets_after_harvest(
     assert vault.creditAvailable({"from": strategy}) > credit_threshold
     assert strategy.harvestTrigger(0)
 
+    chain.sleep(1)
+    chain.mine()
     strategy.harvest({"from": gov})
     assert vault.creditAvailable({"from": strategy}) <= credit_threshold
     assert not strategy.harvestTrigger(0)
 
 
-def test_force_trigger_is_consumed_by_harvest(gov, vault, strategy):
+def test_force_trigger_is_consumed_by_harvest(chain, gov, vault, strategy):
     _reset_trigger_state(strategy, vault, gov)
 
     strategy.setForceHarvestTriggerOnce(True, {"from": gov})
     assert strategy.forceHarvestTriggerOnce()
     assert strategy.harvestTrigger(0)
 
+    chain.sleep(1)
+    chain.mine()
     strategy.harvest({"from": gov})
     assert not strategy.forceHarvestTriggerOnce()
     assert not strategy.harvestTrigger(0)
@@ -118,6 +123,53 @@ def test_min_report_delay_uses_strict_boundary(chain, gov, vault, strategy):
 
     _mine_at(chain, last_report + min_report_delay + 1)
     assert _latest_timestamp(chain) - last_report == min_report_delay + 1
+    assert strategy.harvestTrigger(0)
+
+
+def test_claim_bypass_preserves_other_harvest_triggers(
+    chain,
+    gov,
+    vault,
+    strategy,
+    reward_distributor,
+    deposit_rewards,
+    token,
+    user,
+    fund_ycrv,
+):
+    _reset_trigger_state(strategy, vault, gov)
+    deposit_rewards()
+    chain.sleep(WEEK)
+    chain.mine()
+    assert reward_distributor.getClaimable(strategy) > 0
+    assert strategy.harvestTrigger(0)
+
+    strategy.setBypasses(True, False, {"from": gov})
+    assert not strategy.harvestTrigger(0)
+    strategy.harvest({"from": gov})
+    assert reward_distributor.getClaimable(strategy) > 0
+    assert not strategy.harvestTrigger(0)
+
+    strategy.setForceHarvestTriggerOnce(True, {"from": gov})
+    assert strategy.harvestTrigger(0)
+    strategy.setForceHarvestTriggerOnce(False, {"from": gov})
+
+    deposit = 100 * 10 ** token.decimals()
+    starting_credit = vault.creditAvailable({"from": strategy})
+    strategy.setCreditThreshold(starting_credit, {"from": gov})
+    _fund_and_approve(token, vault, user, fund_ycrv, deposit)
+    vault.deposit(deposit, {"from": user})
+    assert strategy.harvestTrigger(0)
+    strategy.setCreditThreshold(MAX_UINT256, {"from": gov})
+    assert not strategy.harvestTrigger(0)
+
+    strategy.setMinReportDelay(60 * 60, {"from": gov})
+    _mine_at(chain, vault.strategies(strategy)["lastReport"] + 60 * 60 + 1)
+    assert strategy.harvestTrigger(0)
+    strategy.setMinReportDelay(4 * WEEK, {"from": gov})
+    assert not strategy.harvestTrigger(0)
+
+    strategy.setBypasses(False, False, {"from": gov})
     assert strategy.harvestTrigger(0)
 
 

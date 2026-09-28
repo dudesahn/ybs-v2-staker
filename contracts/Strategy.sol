@@ -101,16 +101,16 @@ contract Strategy is BaseStrategy {
         return balanceOfStaked() + balanceOfWant();
     }
 
-    function prepareReturn(uint256 _debtOutstanding)
+    function prepareReturn(
+        uint256 _debtOutstanding
+    )
         internal
         override
-        returns (
-            uint256 _profit,
-            uint256 _loss,
-            uint256 _debtPayment
-        )
+        returns (uint256 _profit, uint256 _loss, uint256 _debtPayment)
     {
         _claimAndSellRewards();
+        // Redeeming parent-vault shares can repay debt through our withdraw hook.
+        _debtOutstanding = vault.debtOutstanding();
 
         uint256 totalAssets = estimatedTotalAssets();
         uint256 totalDebt = vault.strategies(address(this)).totalDebt;
@@ -156,15 +156,15 @@ contract Strategy is BaseStrategy {
             }
 
             // Redeem the full balance at once to avoid unnecessary costly withdrawals.
-            uint256 output =
-                IERC4626(address(rewardToken)).redeem(
-                    rewardBalance,
-                    address(this),
-                    address(this)
-                );
+            IERC4626(address(rewardToken)).redeem(
+                rewardBalance,
+                address(this),
+                address(this)
+            );
 
             if (st.autoAdjustThresholds) {
-                // use our weekly output to set how much we max sell each time (make sure we get it all in 7 days)
+                // Include any unsold crvUSD alongside this week's redeemed rewards.
+                uint256 output = rewardTokenUnderlying.balanceOf(address(this));
                 st.max = uint112((output * 101) / 700);
                 swapThresholds.max = st.max;
             }
@@ -205,10 +205,9 @@ contract Strategy is BaseStrategy {
     }
 
     // use this during a migration to maintain the strategy's previous boost
-    function manualStakeAsMaxWeighted(uint256 _maxStakeShare)
-        external
-        onlyVaultManagers
-    {
+    function manualStakeAsMaxWeighted(
+        uint256 _maxStakeShare
+    ) external onlyVaultManagers {
         require(_maxStakeShare < 1e18, "!percentage");
         require(ybs.balanceOf(address(this)) == 0, "!empty");
         // manually stake a percentage of loose want as max weighted (use 1e18 as percentage)
@@ -224,11 +223,9 @@ contract Strategy is BaseStrategy {
         if (amount > 1) ybs.stake(amount);
     }
 
-    function liquidatePosition(uint256 _amountNeeded)
-        internal
-        override
-        returns (uint256 _liquidatedAmount, uint256 _loss)
-    {
+    function liquidatePosition(
+        uint256 _amountNeeded
+    ) internal override returns (uint256 _liquidatedAmount, uint256 _loss) {
         uint256 loose = want.balanceOf(address(this));
 
         if (_amountNeeded > loose) {
@@ -251,12 +248,9 @@ contract Strategy is BaseStrategy {
         return balanceOfWant();
     }
 
-    function harvestTrigger(uint256 _callCostinEth)
-        public
-        view
-        override
-        returns (bool)
-    {
+    function harvestTrigger(
+        uint256 _callCostinEth
+    ) public view override returns (bool) {
         if (!isBaseFeeAcceptable()) {
             return false;
         }
@@ -272,7 +266,7 @@ contract Strategy is BaseStrategy {
             return true;
         }
 
-        if (rewardDistributor.getClaimable(address(this)) > 0) {
+        if (!bypassClaim && rewardDistributor.getClaimable(address(this)) > 0) {
             return true;
         }
 
@@ -283,17 +277,16 @@ contract Strategy is BaseStrategy {
         return false;
     }
 
-    function emergencyUnstake(uint256 _amount)
-        external
-        onlyEmergencyAuthorized
-    {
+    function emergencyUnstake(
+        uint256 _amount
+    ) external onlyEmergencyAuthorized {
         ybs.unstake(_amount, address(this));
     }
 
-    function approveRewardClaimer(address _claimer, bool _approved)
-        external
-        onlyVaultManagers
-    {
+    function approveRewardClaimer(
+        address _claimer,
+        bool _approved
+    ) external onlyVaultManagers {
         rewardDistributor.approveClaimer(_claimer, _approved);
     }
 
@@ -327,18 +320,17 @@ contract Strategy is BaseStrategy {
         swapThresholds.autoAdjustThresholds = _autoAdjustThresholds;
     }
 
-    function setBypasses(bool _bypassClaim, bool _bypassMaxStake)
-        external
-        onlyVaultManagers
-    {
+    function setBypasses(
+        bool _bypassClaim,
+        bool _bypassMaxStake
+    ) external onlyVaultManagers {
         bypassClaim = _bypassClaim;
         bypassMaxStake = _bypassMaxStake;
     }
 
-    function setWeekEndLockWindow(uint256 _weekEndLockWindow)
-        external
-        onlyVaultManagers
-    {
+    function setWeekEndLockWindow(
+        uint256 _weekEndLockWindow
+    ) external onlyVaultManagers {
         require(_weekEndLockWindow < 7 days, "Too High");
         weekEndLockWindow = _weekEndLockWindow;
     }
@@ -356,7 +348,7 @@ contract Strategy is BaseStrategy {
         uint256 amount = balanceOfStaked();
         if (amount > 1) ybs.unstake(amount, _newStrategy);
         amount = vault.balanceOf(address(this));
-        if (amount > 0) vault.safeTransfer(_newStrategy, amount);
+        if (amount > 0) vault.transfer(_newStrategy, amount);
         amount = rewardToken.balanceOf(address(this));
         if (amount > 0) rewardToken.safeTransfer(_newStrategy, amount);
         amount = rewardTokenUnderlying.balanceOf(address(this));
@@ -388,13 +380,9 @@ contract Strategy is BaseStrategy {
         return tokens;
     }
 
-    function ethToWant(uint256 _amtInWei)
-        public
-        view
-        virtual
-        override
-        returns (uint256)
-    {}
+    function ethToWant(
+        uint256 _amtInWei
+    ) public view virtual override returns (uint256) {}
 
     function min(uint256 a, uint256 b) internal pure returns (uint256) {
         return a < b ? a : b;
