@@ -365,13 +365,19 @@ def crvusd_dummy_vault(reward_token, gov):
 
 
 @pytest.fixture
-def crvusd_whale(accounts, user, reward_token, reward_underlying):
-    # In order to get some funds for the token you are about to use,
-    # it impersonate an exchange address to use it's funds.
+def funded_crvusd(accounts, user, reward_underlying):
     amount = 100_000 * 10**18
     reserve = accounts.at("0xA920De414eA4Ab66b97dA1bFE9e6EcA7d4219635", force=True)
     assert reward_underlying.balanceOf(reserve) >= amount
+    balance_before = reward_underlying.balanceOf(user)
     reward_underlying.transfer(user, amount, {"from": reserve})
+    assert reward_underlying.balanceOf(user) - balance_before == amount
+    yield amount
+
+
+@pytest.fixture
+def crvusd_whale(user, reward_token, reward_underlying, funded_crvusd):
+    amount = funded_crvusd
     reward_underlying.approve(reward_token, 2**256 - 1, {"from": user})
     shares_before = reward_token.balanceOf(user)
     reward_token.deposit(amount, user, {"from": user})

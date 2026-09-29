@@ -55,11 +55,9 @@ def _assert_otc_enabled_event(tx, enabled):
 
 
 @pytest.fixture
-def loose_crvusd(reward_token, user, crvusd_whale):
-    token_in = Contract(reward_token.asset())
-    reward_token.redeem(reward_token.balanceOf(user), user, user, {"from": user})
-    assert token_in.balanceOf(user) >= 1_000 * PRECISION
-    return token_in
+def loose_crvusd(reward_underlying, user, funded_crvusd):
+    assert reward_underlying.balanceOf(user) >= 1_000 * PRECISION
+    return reward_underlying
 
 
 @pytest.mark.parametrize("with_inventory", [False, True])
@@ -182,6 +180,59 @@ def test_swapper_refunds_dust_after_partial_otc_fill(
     assert loose_crvusd.balanceOf(swapper) == 0
     assert token.balanceOf(swapper) == 0
     assert treasury_vault.balanceOf(swapper.treasury()) > treasury_before
+
+
+def test_otc_permission_is_required_and_revocable(
+    swapper_v5,
+    loose_crvusd,
+    token,
+    user,
+    management,
+    fund_ycrv,
+):
+    swapper = swapper_v5
+    treasury_vault = Contract(swapper.vault())
+    amount = 100 * PRECISION
+    # Keep enough inventory after the permitted sale for another real trade.
+    inventory = 3 * amount * swapper.priceOracle() // PRECISION
+    fund_ycrv(swapper, inventory)
+    swapper.enableOtc(True, {"from": management})
+    loose_crvusd.approve(swapper, MAX_UINT, {"from": user})
+
+    def balances():
+        return {
+            "caller_input": loose_crvusd.balanceOf(user),
+            "caller_output": token.balanceOf(user),
+            "swapper_input": loose_crvusd.balanceOf(swapper),
+            "swapper_output": token.balanceOf(swapper),
+            "treasury_shares": treasury_vault.balanceOf(swapper.treasury()),
+        }
+
+    assert not swapper.allowedSwapper(user)
+    before = balances()
+    with brownie.reverts("!AllowedSwapper"):
+        swapper.swap(amount, {"from": user})
+    assert balances() == before
+
+    swapper.setAllowedSwapper(user, True, {"from": management})
+    before = balances()
+    tx = swapper.swap(amount, {"from": user})
+    event = _assert_otc_event(tx)
+    after = balances()
+
+    assert event["sellTokenAmount"] == amount
+    assert tx.return_value == event["buyTokenAmount"]
+    assert before["caller_input"] - after["caller_input"] == amount
+    assert after["caller_output"] - before["caller_output"] == tx.return_value
+    assert after["swapper_input"] == before["swapper_input"]
+    assert before["swapper_output"] - after["swapper_output"] == tx.return_value
+    assert after["treasury_shares"] > before["treasury_shares"]
+
+    swapper.setAllowedSwapper(user, False, {"from": management})
+    before = balances()
+    with brownie.reverts("!AllowedSwapper"):
+        swapper.swap(amount, {"from": user})
+    assert balances() == before
 
 
 def test_swapper(
