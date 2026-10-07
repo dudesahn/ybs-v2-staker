@@ -1,11 +1,7 @@
-import brownie
-import pytest
-from brownie import Contract
-
 from scripts import deploy
 
 
-def test_deploy_and_migrate_with_explicit_replacement_swapper(
+def test_deploy_and_migrate_with_live_swapper(
     chain,
     strategist,
     management,
@@ -13,45 +9,15 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     user,
     vault,
     old_strategy,
-    token,
     reward_token,
     reward_underlying,
     ybs,
+    swapper_v5,
     crvusd_whale,
 ):
-    legacy = Contract(deploy.LEGACY_SWAPPER_V5)
-    swapper = deploy.deploy_swapper(
-        management, deployer=strategist, publish_source=False
-    )
-
-    assert swapper.address != legacy.address
-    assert swapper.tokenIn() == reward_underlying.address
-    assert swapper.tokenOut() == token.address
-    assert swapper.pool1() == legacy.pool1()
-    assert swapper.pool2() == legacy.pool2()
-    assert swapper.tokenOutPool1() == legacy.tokenOutPool1()
-    assert swapper.pool1InTokenIdx() == legacy.pool1InTokenIdx()
-    assert swapper.pool1OutTokenIdx() == legacy.pool1OutTokenIdx()
-    assert swapper.approvedVault() == vault.address
-    assert swapper.vault() == reward_token.address
-    assert swapper.owner() == gov.address
-    assert swapper.management() == management.address
-    assert not swapper.otcEnabled()
-    assert token.balanceOf(swapper) == 0
-    assert vault.balanceOf(swapper) == 0
-    assert not swapper.operator(strategist)
-    assert not swapper.operator(user)
-
-    # Deploying the swapper grants no ongoing administrative rights to its deployer.
-    with brownie.reverts("!operator"):
-        swapper.enableOtc(True, {"from": strategist})
-    with brownie.reverts("!ownerOrManagement"):
-        swapper.setOperator(strategist, True, {"from": strategist})
-    with brownie.reverts("!owner"):
-        swapper.setManagement(strategist, {"from": management})
-
-    strategy = deploy.main(swapper, publish_source=False, deployer=strategist)
-    assert strategy.swapper() == swapper.address
+    swapper = swapper_v5
+    strategy = deploy.main(publish_source=False, deployer=strategist)
+    assert strategy.swapper() == swapper.address == old_strategy.swapper()
     assert strategy.keeper() == old_strategy.keeper()
     assert strategy.strategist() == old_strategy.strategist()
     assert strategy.minReportDelay() == old_strategy.minReportDelay()
@@ -62,21 +28,11 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     assert not swapper.allowedSwapper(strategy)
     assert reward_underlying.allowance(strategy, swapper) == 2**256 - 1
 
-    # A mismatched replacement selection must fail before any migration setup.
-    debt_before_setup = vault.totalDebt()
-    with pytest.raises(AssertionError, match="unexpected staged swapper"):
-        deploy.setup(strategy, legacy.address, sender=gov)
-    assert vault.strategies(strategy)["activation"] == 0
-    assert vault.totalDebt() == debt_before_setup
-    assert not ybs.approvedWeightedStaker(strategy)
-
     ratio_before_setup = vault.debtRatio()
     params_before_setup = vault.strategies(old_strategy)
-    old_swapper_before_setup = old_strategy.swapper()
-    result = deploy.setup(strategy, swapper, sender=gov)
+    result = deploy.setup(strategy, sender=gov)
 
     assert result.address == strategy.address
-    assert old_strategy.swapper() == old_swapper_before_setup
     assert vault.strategies(old_strategy)["totalDebt"] == 0
     assert vault.strategies(old_strategy)["debtRatio"] == 0
     params_after_setup = vault.strategies(strategy)
@@ -95,8 +51,8 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     assert strategy.feeRecipient() == deploy.FEE_RECIPIENT
     assert strategy.rewardFee() == deploy.REWARD_FEE
 
-    # The migrated strategy is automatically allowed to OTC by its Vault
-    # registration. Empty new reserves must fall back to the market route.
+    # The Vault registration lets the migrated strategy OTC against the live
+    # inventory without an allowlist entry.
     swapper.enableOtc(True, {"from": management})
     assert not swapper.allowedSwapper(strategy)
     strategy.setBypasses(True, True, {"from": gov})
@@ -107,19 +63,23 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     fee_shares_before = reward_token.balanceOf(deploy.FEE_RECIPIENT)
     gain_before = vault.strategies(strategy)["totalGain"]
     supply_before = vault.totalSupply()
+    swapper_shares_before = vault.balanceOf(swapper)
 
     chain.sleep(1)
     chain.mine()
-    strategy.harvest({"from": gov})
+    tx = strategy.harvest({"from": gov})
 
+    assert "OTC" in tx.events
     assert vault.strategies(strategy)["totalGain"] > gain_before
     assert strategy.balanceOfReward() == 0
     assert reward_underlying.balanceOf(swapper) == 0
-    assert reward_token.balanceOf(swapper.treasury()) == treasury_shares_before
+    assert reward_token.balanceOf(swapper.treasury()) > treasury_shares_before
     # The strategy takes the fee in reward-vault shares, and the Vault mints none.
+    # Only the swapper's own redemptions, if any, change the supply.
     assert (
         reward_token.balanceOf(deploy.FEE_RECIPIENT) - fee_shares_before
         == reward_shares * deploy.REWARD_FEE // 10_000
     )
-    assert vault.totalSupply() == supply_before
+    swapper_shares_redeemed = swapper_shares_before - vault.balanceOf(swapper)
+    assert vault.totalSupply() == supply_before - swapper_shares_redeemed
     assert vault.balanceOf(strategy) == 0

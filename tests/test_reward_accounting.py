@@ -11,7 +11,6 @@ def test_debt_is_refreshed_after_otc_withdrawal_during_repayment(
     user,
     gov,
     management,
-    fund_ycrv,
     funded_crvusd,
     chain,
     repayment,
@@ -21,15 +20,11 @@ def test_debt_is_refreshed_after_otc_withdrawal_during_repayment(
     strategy.setSwapThresholds(0, 2**112 - 2, False, {"from": gov})
     strategy.setWeekEndHarvestTrigger(0, {"from": gov})
 
-    # Give the swapper parent-vault share inventory, then invest the deposit so
-    # the Vault must pull the OTC redemption from the strategy, not from idle.
-    assets = 1_000 * 10 ** token.decimals()
-    fund_ycrv(user, assets)
-    token.approve(vault, assets, {"from": user})
-    shares_before = vault.balanceOf(user)
-    vault.deposit(assets, {"from": user})
-    inventory_shares = vault.balanceOf(user) - shares_before
-    vault.transfer(swapper_v5, inventory_shares, {"from": user})
+    # Move the swapper's loose yCRV out, so the OTC sale must redeem its live
+    # parent-vault shares.
+    swapper_v5.sweep(token, {"from": management})
+    inventory_shares = vault.balanceOf(swapper_v5)
+    assert inventory_shares > 0
     # Vault 0.4.3 keeps each report's gain as idle. The first harvest reports the
     # migrated position's gain; the second lends that idle back with no new gain.
     for _ in range(2):
@@ -45,9 +40,13 @@ def test_debt_is_refreshed_after_otc_withdrawal_during_repayment(
     debt_before = vault.strategies(strategy)["totalDebt"]
     assert vault.debtOutstanding(strategy) == debt_before
 
-    reward_underlying.transfer(strategy, 100 * 10**18, {"from": user})
-    inventory_value = inventory_shares * vault.pricePerShare() // 10 ** vault.decimals()
-    assert token.balanceOf(vault) < inventory_value
+    # The redemption is worth more than the Vault's idle yCRV, so the Vault must
+    # pull it from the strategy.
+    sale = 100 * 10**18
+    reward_underlying.transfer(strategy, sale, {"from": user})
+    quoted_shares = sale * swapper_v5.priceOracle() // 10**18
+    quoted_value = quoted_shares * vault.pricePerShare() // 10 ** vault.decimals()
+    assert token.balanceOf(vault) < quoted_value
 
     chain.sleep(1)
     chain.mine()
@@ -56,8 +55,8 @@ def test_debt_is_refreshed_after_otc_withdrawal_during_repayment(
     # The swapper's redemption repaid part of the debt through Strategy.withdraw
     # during the swap. The report must repay only the remainder; with a stale
     # debtOutstanding, liquidatePosition would ask YBS for more than is staked.
-    assert "OTC" in tx.events
-    assert vault.balanceOf(swapper_v5) < inventory_shares
+    trade = tx.events["OTC"]
+    assert vault.balanceOf(swapper_v5) == inventory_shares - trade["buyTokenAmount"]
     report = tx.events["Harvested"]
     assert report["profit"] > 0
     assert report["loss"] <= 1

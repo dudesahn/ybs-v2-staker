@@ -6,6 +6,7 @@ from brownie.network.rpc import anvil
 
 
 DEPLOYED_STRATEGY = "0xe3974e44bc08f435da2c6db7d01e1758496da119"
+DEPLOYED_SWAPPER = "0x1B7e6fB817112b036EAa4AE85479fF1C2E9330A2"
 MIGRATION_MAX_WEIGHT_SHARE = 998 * 10**15
 
 
@@ -46,8 +47,8 @@ def user(accounts):
 
 
 @pytest.fixture
-def management(accounts):
-    yield accounts[3]
+def management(accounts, swapper_v5):
+    yield accounts.at(swapper_v5.management(), force=True)
 
 
 @pytest.fixture
@@ -172,16 +173,10 @@ def utils(registry, token):
 
 
 @pytest.fixture
-def swapper_v5(gov, token, SwapperV5, management):
-    token_in = "0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E"  # crvUSD
-    token_out = token
-    token_out_pool1 = "0xD533a949740bb3306d119CC777fa900bA034cd52"
-    pool1 = "0x4eBdF703948ddCEA3B11f675B4D1Fba9d2414A14"
-    pool2 = "0x99f5acc8ec2da2bc0771c32814eff52b712de1e5"
-    swapper = gov.deploy(
-        SwapperV5, management, token_in, token_out, pool1, token_out_pool1, pool2
-    )
-    yield swapper
+def swapper_v5(old_strategy):
+    # The new strategy keeps the live swapper and its OTC inventory.
+    assert old_strategy.swapper() == DEPLOYED_SWAPPER
+    yield Contract(DEPLOYED_SWAPPER)
 
 
 @pytest.fixture

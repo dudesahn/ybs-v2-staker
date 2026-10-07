@@ -8,7 +8,6 @@ def test_harvest_stakes_swap_proceeds_at_maximum_weight(
     ybs,
     reward_underlying,
     funded_crvusd,
-    fund_ycrv,
     user,
     gov,
     management,
@@ -21,10 +20,8 @@ def test_harvest_stakes_swap_proceeds_at_maximum_weight(
     strategy.harvest({"from": gov})
     assert ybs.approvedWeightedStaker(strategy)
 
-    # A fully funded OTC sale gives an observable amount of reward proceeds.
+    # The live inventory fills the whole sale, giving observable reward proceeds.
     sale = 100 * 10**18
-    inventory = 2 * sale * swapper_v5.priceOracle() // 10**18
-    fund_ycrv(swapper_v5, inventory)
     swapper_v5.enableOtc(True, {"from": management})
     reward_underlying.transfer(strategy, sale, {"from": user})
     chain.sleep(1)
