@@ -168,6 +168,7 @@ contract SwapperV5 {
     function _sellOtc(
         uint _sellTokenAmount
     ) internal isAllowedSwapper returns (uint, uint) {
+        if (_sellTokenAmount < PRECISION) return (0, _sellTokenAmount);
         ERC20 buyToken = tokenOut;
         uint price = priceOracle();
         uint amountToSell = _sellTokenAmount;
@@ -181,7 +182,7 @@ contract SwapperV5 {
                 // note that since this is a V2 vault, input amount is shares, not underlying
                 approvedVault.withdraw(amountToBuy, address(this));
             } else {
-                if (vaultBalance > 0) {
+                if (vaultBalance >= PRECISION) {
                     approvedVault.withdraw(vaultBalance, address(this));
                     buyTokenBalance = buyToken.balanceOf(address(this));
                 }
@@ -191,7 +192,7 @@ contract SwapperV5 {
                 }
             }
         }
-        if (amountToSell == 0 || amountToBuy == 0) {
+        if (amountToSell < PRECISION || amountToBuy == 0) {
             return (0, _sellTokenAmount);
         }
         buyToken.safeTransfer(msg.sender, amountToBuy);

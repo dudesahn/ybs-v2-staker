@@ -116,14 +116,76 @@ def test_current_strategy_uses_market_after_otc_inventory_runs_out(
         assert vault.strategies(strategy)["totalLoss"] == params_before["totalLoss"]
 
 
+@pytest.mark.parametrize("dust", ["ycrv", "shares"])
+def test_otc_dust_inventory_cannot_block_strategy_sales(
+    strategy,
+    swapper_v5,
+    vault,
+    token,
+    loose_crvusd,
+    user,
+    gov,
+    management,
+    fund_ycrv,
+    chain,
+    dust,
+):
+    swapper = swapper_v5
+    treasury_vault = Contract(swapper.vault())
+    strategy.setBypasses(True, True, {"from": gov})
+    strategy.setSwapThresholds(0, 1_000_000 * PRECISION, False, {"from": gov})
+    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
+    if dust == "shares":
+        # Mint parent-vault shares for the dust donation below.
+        assets = 100 * PRECISION
+        fund_ycrv(user, assets)
+        token.approve(vault, assets, {"from": user})
+        vault.deposit(assets, {"from": user})
+    strategy.harvest({"from": gov})
+    assert vault.balanceOf(swapper) == 0
+    assert token.balanceOf(swapper) == 0
+
+    swapper.enableOtc(True, {"from": management})
+    if dust == "ycrv":
+        # A capped fill against this inventory would sell 1 wei of crvUSD, and
+        # the treasury vault mints no shares for 1 wei.
+        donated = swapper.priceOracle() // PRECISION + 1
+        fund_ycrv(swapper, donated)
+        assert donated * PRECISION // swapper.priceOracle() == 1
+    else:
+        # Redeeming 2 share-wei would ask the strategy for an odd few wei.
+        donated = 2
+        vault.transfer(swapper, donated, {"from": user})
+
+    loose_crvusd.transfer(strategy, 100 * PRECISION, {"from": user})
+    treasury_before = treasury_vault.balanceOf(swapper.treasury())
+    gain_before = vault.strategies(strategy)["totalGain"]
+
+    chain.sleep(1)
+    chain.mine()
+    tx = strategy.harvest({"from": gov})
+
+    # The swapper ignores the dust, and the whole sale uses the market route.
+    assert "OTC" not in tx.events
+    assert treasury_vault.balanceOf(swapper.treasury()) == treasury_before
+    assert loose_crvusd.balanceOf(strategy) == 0
+    assert vault.strategies(strategy)["totalGain"] > gain_before
+    if dust == "ycrv":
+        assert token.balanceOf(swapper) == donated
+    else:
+        assert vault.balanceOf(swapper) == donated
+
+
 @pytest.mark.parametrize("otc_enabled", [False, True])
 @pytest.mark.parametrize("amount", [0, 1, PRECISION - 1])
 def test_swapper_refunds_input_below_market_minimum(
     swapper_v5,
     loose_crvusd,
     token,
+    vault,
     user,
     management,
+    fund_ycrv,
     otc_enabled,
     amount,
 ):
@@ -132,6 +194,17 @@ def test_swapper_refunds_input_below_market_minimum(
     swapper.setAllowedSwapper(user, True, {"from": management})
     swapper.enableOtc(otc_enabled, {"from": management})
     loose_crvusd.approve(swapper, MAX_UINT, {"from": user})
+    # Parent-vault share inventory is larger than a tiny quote and smaller than
+    # a near-1e18 quote, so both OTC branches would redeem it without the
+    # sub-minimum input check.
+    share_assets = 10 * PRECISION
+    fund_ycrv(user, share_assets)
+    token.approve(vault, share_assets, {"from": user})
+    user_shares_before = vault.balanceOf(user)
+    vault.deposit(share_assets, {"from": user})
+    vault.transfer(swapper, vault.balanceOf(user) - user_shares_before, {"from": user})
+    swapper_shares = vault.balanceOf(swapper)
+    assert swapper_shares > 0
     # A refund belongs only to the current caller; pre-existing funds stay put.
     stranded = 3 * PRECISION
     loose_crvusd.transfer(swapper, stranded, {"from": user})
@@ -147,6 +220,7 @@ def test_swapper_refunds_input_below_market_minimum(
     assert loose_crvusd.balanceOf(swapper) == stranded
     assert token.balanceOf(user) == output_before
     assert treasury_vault.balanceOf(swapper.treasury()) == treasury_before
+    assert vault.balanceOf(swapper) == swapper_shares
 
 
 def test_swapper_refunds_dust_after_partial_otc_fill(
