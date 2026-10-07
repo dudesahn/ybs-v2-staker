@@ -8,19 +8,13 @@ PRECISION = 10**18
 MAX_UINT = 2**256 - 1
 
 
-def _prepare_swapper(swapper, strategy, chain, gov, management):
-    old_swapper = strategy.swapper()
-    token_in = Contract(swapper.tokenIn())
-
-    strategy.harvest({"from": gov})
-    strategy.upgradeSwapper(swapper, {"from": gov})
-
+def _settle_strategy(swapper, strategy, chain, gov, management):
+    # Report the migrated position, then let its stake earn weekly reward weight.
     assert strategy.swapper() == swapper
-    assert token_in.allowance(strategy, old_swapper) == 0
-    assert token_in.allowance(strategy, swapper) == MAX_UINT
     assert swapper.management() == management
     assert swapper.priceOracle() > 0
 
+    strategy.harvest({"from": gov})
     chain.sleep(3 * WEEK)
     chain.mine()
 
@@ -61,7 +55,7 @@ def loose_crvusd(reward_underlying, user, funded_crvusd):
 
 
 @pytest.mark.parametrize("with_inventory", [False, True])
-def test_current_strategy_uses_market_after_otc_inventory_runs_out(
+def test_strategy_uses_market_after_otc_inventory_runs_out(
     strategy,
     swapper_v5,
     vault,
@@ -309,21 +303,20 @@ def test_otc_permission_is_required_and_revocable(
     assert balances() == before
 
 
-def test_swapper(
+def test_weekly_harvests_follow_otc_toggle(
     swapper_v5,
     deposit_rewards,
     chain,
     gov,
-    old_strategy,
+    strategy,
     management,
     fund_ycrv,
 ):
     swapper = swapper_v5
-    strategy = old_strategy
     token_out = Contract(swapper.tokenOut())
     treasury_vault = Contract(swapper.vault())
 
-    _prepare_swapper(swapper, strategy, chain, gov, management)
+    _settle_strategy(swapper, strategy, chain, gov, management)
 
     assert not swapper.otcEnabled()
     token_out_before = token_out.balanceOf(swapper)
@@ -361,23 +354,22 @@ def test_swapper(
     assert treasury_vault.balanceOf(swapper.treasury()) == treasury_shares_before
 
 
-def test_swapper_withdraw(
+def test_weekly_harvest_redeems_parent_vault_share_inventory(
     swapper_v5,
     vault,
     deposit_rewards,
     chain,
     gov,
-    old_strategy,
+    strategy,
     management,
     token,
     user,
     fund_ycrv,
 ):
     swapper = swapper_v5
-    strategy = old_strategy
     treasury_vault = Contract(swapper.vault())
 
-    _prepare_swapper(swapper, strategy, chain, gov, management)
+    _settle_strategy(swapper, strategy, chain, gov, management)
 
     shares_to_supply = 10 * PRECISION
     assets_needed = (

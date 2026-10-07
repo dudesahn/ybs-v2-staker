@@ -79,7 +79,7 @@ def test_operation(
     deposit_rewards,
     fund_ycrv,
 ):
-    # do a harvest to get all of our loose vault funds into the strategy (assuming no more profitable harvests left)
+    # Report the migrated position once; the Vault keeps that gain as idle yCRV.
     assert vault.strategies(strategy)["debtRatio"] == 10_000
     strategy.harvest({"from": gov})
 
@@ -88,7 +88,6 @@ def test_operation(
     user_balance_before = token.balanceOf(user)
     token.approve(vault.address, amount, {"from": user})
     vault.deposit(amount, {"from": user})
-    # assert token.balanceOf(vault.address) == amount
 
     # Sleep to the next week to be able to claim rewards
     chain.sleep(60 * 60 * 24 * 7)

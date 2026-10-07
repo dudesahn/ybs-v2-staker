@@ -155,3 +155,74 @@ def test_rewards_configuration_requires_rewarder(
     assert strategy.rewards() == new_rewards
     assert vault.allowance(strategy, old_rewards) == 0
     assert vault.allowance(strategy, new_rewards) == MAX_UINT
+
+
+def test_rewards_allowance_and_reward_claims_are_not_public(
+    accounts,
+    strategy,
+    vault,
+    token,
+    user,
+    gov,
+    reward_distributor,
+    fund_ycrv,
+):
+    attacker = accounts[9]
+    previous_rewards = strategy.rewards()
+
+    strategy.setRewards(strategy, {"from": gov})
+
+    # BaseStrategy revokes the former recipient and approves only itself.
+    assert vault.allowance(strategy, previous_rewards) == 0
+    assert vault.allowance(strategy, strategy) == MAX_UINT
+    assert vault.allowance(strategy, attacker) == 0
+
+    # Stage parent-vault shares and prove the self-allowance cannot be used by
+    # an arbitrary caller to pull them out of the strategy.
+    assets = 100 * 10 ** token.decimals()
+    fund_ycrv(user, assets)
+    token.approve(vault, assets, {"from": user})
+    shares_before = vault.balanceOf(user)
+    vault.deposit(assets, {"from": user})
+    staged_shares = vault.balanceOf(user) - shares_before
+    vault.transfer(strategy, staged_shares, {"from": user})
+
+    strategy_shares_before = vault.balanceOf(strategy)
+    attacker_shares_before = vault.balanceOf(attacker)
+    with brownie.reverts():
+        vault.transferFrom(
+            strategy,
+            attacker,
+            strategy_shares_before,
+            {"from": attacker},
+        )
+    assert vault.balanceOf(strategy) == strategy_shares_before
+    assert vault.balanceOf(attacker) == attacker_shares_before
+
+    # The inherited rewards address is unrelated to the YBS distributor's
+    # claimer and recipient mappings. Only the strategy can configure those
+    # mappings for its own account, via vault-manager-gated strategy methods.
+    strategy_account_info = reward_distributor.accountInfo(strategy)
+    assert not reward_distributor.approvedClaimer(strategy, attacker)
+    with brownie.reverts("!approvedClaimer"):
+        reward_distributor.claimFor(strategy, {"from": attacker})
+    with brownie.reverts("!approvedClaimer"):
+        reward_distributor.claimWithRangeFor(
+            strategy,
+            0,
+            reward_distributor.getWeek() - 1,
+            {"from": attacker},
+        )
+
+    reward_distributor.configureRecipient(attacker, {"from": attacker})
+    assert reward_distributor.accountInfo(strategy) == strategy_account_info
+    assert reward_distributor.accountInfo(attacker)["recipient"] == attacker
+
+    with brownie.reverts():
+        strategy.approveRewardClaimer(attacker, True, {"from": attacker})
+    assert not reward_distributor.approvedClaimer(strategy, attacker)
+
+    # Harvest is also not public, so an attacker cannot force the strategy to
+    # run its own claim/report sequence.
+    with brownie.reverts():
+        strategy.harvest({"from": attacker})

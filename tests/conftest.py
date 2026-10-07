@@ -46,16 +46,6 @@ def user(accounts):
 
 
 @pytest.fixture
-def rewards(accounts):
-    yield accounts[1]
-
-
-@pytest.fixture
-def guardian(accounts):
-    yield accounts[2]
-
-
-@pytest.fixture
 def management(accounts):
     yield accounts[3]
 
@@ -237,7 +227,7 @@ def strategy(
     # make sure it's empty
     assert token.balanceOf(old_strategy) == 0 == old_strategy.estimatedTotalAssets()
 
-    # make gov an approved staker
+    # YBS must approve the strategy as a weighted staker before the migration stake.
     with brownie.reverts("!approvedStaker"):
         strategy.manualStakeAsMaxWeighted(
             MIGRATION_MAX_WEIGHT_SHARE,

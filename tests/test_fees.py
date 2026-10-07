@@ -5,7 +5,6 @@ from eth_abi import decode
 
 
 DEFAULT_FEE_RECIPIENT = "0x044F9C86a0Da637a235E83564215DC271Bc0deFc"
-MAX_UINT = 2**256 - 1
 MAX_REWARD_FEE = 1_000
 WITHDRAW_TOPIC = web3.keccak(
     text="Withdraw(address,address,address,uint256,uint256)"
@@ -135,74 +134,3 @@ def test_set_fee_access_and_bounds(strategy, vault, accounts, gov, strategist):
 
     strategy.setFee(new_recipient, 0, {"from": gov})
     assert strategy.rewardFee() == 0
-
-
-def test_self_rewards_does_not_grant_public_access(
-    accounts,
-    strategy,
-    vault,
-    token,
-    user,
-    gov,
-    reward_distributor,
-    fund_ycrv,
-):
-    attacker = accounts[9]
-    previous_rewards = strategy.rewards()
-
-    strategy.setRewards(strategy, {"from": gov})
-
-    # BaseStrategy revokes the former recipient and approves only itself.
-    assert vault.allowance(strategy, previous_rewards) == 0
-    assert vault.allowance(strategy, strategy) == MAX_UINT
-    assert vault.allowance(strategy, attacker) == 0
-
-    # Stage parent-vault shares and prove the self-allowance cannot be used by
-    # an arbitrary caller to pull them out of the strategy.
-    assets = 100 * 10 ** token.decimals()
-    fund_ycrv(user, assets)
-    token.approve(vault, assets, {"from": user})
-    shares_before = vault.balanceOf(user)
-    vault.deposit(assets, {"from": user})
-    staged_shares = vault.balanceOf(user) - shares_before
-    vault.transfer(strategy, staged_shares, {"from": user})
-
-    strategy_shares_before = vault.balanceOf(strategy)
-    attacker_shares_before = vault.balanceOf(attacker)
-    with brownie.reverts():
-        vault.transferFrom(
-            strategy,
-            attacker,
-            strategy_shares_before,
-            {"from": attacker},
-        )
-    assert vault.balanceOf(strategy) == strategy_shares_before
-    assert vault.balanceOf(attacker) == attacker_shares_before
-
-    # The inherited rewards address is unrelated to the YBS distributor's
-    # claimer and recipient mappings. Only the strategy can configure those
-    # mappings for its own account, via vault-manager-gated strategy methods.
-    strategy_account_info = reward_distributor.accountInfo(strategy)
-    assert not reward_distributor.approvedClaimer(strategy, attacker)
-    with brownie.reverts("!approvedClaimer"):
-        reward_distributor.claimFor(strategy, {"from": attacker})
-    with brownie.reverts("!approvedClaimer"):
-        reward_distributor.claimWithRangeFor(
-            strategy,
-            0,
-            reward_distributor.getWeek() - 1,
-            {"from": attacker},
-        )
-
-    reward_distributor.configureRecipient(attacker, {"from": attacker})
-    assert reward_distributor.accountInfo(strategy) == strategy_account_info
-    assert reward_distributor.accountInfo(attacker)["recipient"] == attacker
-
-    with brownie.reverts():
-        strategy.approveRewardClaimer(attacker, True, {"from": attacker})
-    assert not reward_distributor.approvedClaimer(strategy, attacker)
-
-    # Harvest is also not public, so an attacker cannot force the strategy to
-    # run its own claim/report sequence.
-    with brownie.reverts():
-        strategy.harvest({"from": attacker})
