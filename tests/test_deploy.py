@@ -64,7 +64,7 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     assert strategy.minReportDelay() == old_strategy.minReportDelay()
     assert strategy.maxReportDelay() == old_strategy.maxReportDelay()
     assert strategy.rewards() == strategy.address
-    assert not strategy.feeModeActive()
+    assert strategy.rewardFee() == 0
     assert vault.strategies(strategy)["activation"] == 0
     assert not swapper.allowedSwapper(strategy)
     assert reward_underlying.allowance(strategy, swapper) == 2**256 - 1
@@ -97,8 +97,10 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     assert ybs.approvedWeightedStaker(strategy)
     assert strategy.balanceOfStaked() > 0
     assert strategy.balanceOfWant() <= 1
-    assert vault.rewards() == strategy.address
-    assert strategy.feeModeActive()
+    assert vault.performanceFee() == 0
+    assert vault.rewards() == deploy.FEE_RECIPIENT
+    assert strategy.feeRecipient() == deploy.FEE_RECIPIENT
+    assert strategy.rewardFee() == deploy.REWARD_FEE
 
     # The migrated strategy is automatically allowed to OTC by its Vault
     # registration. Empty new reserves must fall back to the market route.
@@ -107,8 +109,11 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     strategy.setBypasses(True, True, {"from": gov})
     strategy.setSwapThresholds(1, 1_000_000 * 10**18, False, {"from": gov})
     reward_token.transfer(strategy, 500 * 10**18, {"from": user})
+    reward_shares = strategy.balanceOfReward()
     treasury_shares_before = reward_token.balanceOf(swapper.treasury())
+    fee_shares_before = reward_token.balanceOf(deploy.FEE_RECIPIENT)
     gain_before = vault.strategies(strategy)["totalGain"]
+    supply_before = vault.totalSupply()
 
     chain.sleep(1)
     chain.mine()
@@ -118,4 +123,10 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     assert strategy.balanceOfReward() == 0
     assert reward_underlying.balanceOf(swapper) == 0
     assert reward_token.balanceOf(swapper.treasury()) == treasury_shares_before
-    assert vault.balanceOf(strategy) > 0
+    # The strategy takes the fee in reward-vault shares, and the Vault mints none.
+    assert (
+        reward_token.balanceOf(deploy.FEE_RECIPIENT) - fee_shares_before
+        == reward_shares * deploy.REWARD_FEE // 10_000
+    )
+    assert vault.totalSupply() == supply_before
+    assert vault.balanceOf(strategy) == 0

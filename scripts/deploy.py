@@ -25,6 +25,7 @@ GOVERNANCE = "0xFEB4acf3df3cDEA7399794D0869ef76A6EfAff52"
 
 DEPLOYER_ACCOUNT = "wavey3"
 CREDIT_THRESHOLD = 25_000 * 10**18
+REWARD_FEE = 1_000
 MIGRATION_MAX_WEIGHT_SHARE = 998 * 10**15
 
 
@@ -44,7 +45,7 @@ def _assert_staged(strategy, vault, old_strategy, swapper):
     assert vault.strategies(strategy)["activation"] == 0
     assert strategy.estimatedTotalAssets() == 0
     assert vault.balanceOf(strategy) == 0
-    assert not strategy.feeModeActive()
+    assert strategy.rewardFee() == 0
 
 
 def deploy_swapper(management, deployer=None, publish_source=True):
@@ -129,7 +130,7 @@ def setup(strategy_address, swapper_address, sender=GOVERNANCE):
         "strategies",
         "balanceOf",
         "migrateStrategy",
-        "setRewards",
+        "setPerformanceFee",
     )
     strategy = deployed_contract(
         strategy_address,
@@ -142,7 +143,8 @@ def setup(strategy_address, swapper_address, sender=GOVERNANCE):
         "keeper",
         "strategist",
         "estimatedTotalAssets",
-        "feeModeActive",
+        "rewardFee",
+        "setFee",
         "setCreditThreshold",
         "setBaseFeeOracle",
         "manualStakeAsMaxWeighted",
@@ -175,7 +177,9 @@ def setup(strategy_address, swapper_address, sender=GOVERNANCE):
     old_strategy.harvest({"from": sender})
     vault.migrateStrategy(old_strategy, strategy, {"from": sender})
     strategy.manualStakeAsMaxWeighted(MIGRATION_MAX_WEIGHT_SHARE, {"from": sender})
-    vault.setRewards(strategy, {"from": sender})
+    # Charge the performance fee in the strategy, so the Vault mints no fee shares.
+    vault.setPerformanceFee(0, {"from": sender})
+    strategy.setFee(FEE_RECIPIENT, REWARD_FEE, {"from": sender})
 
     assert vault.strategies(old_strategy)["totalDebt"] == 0
     assert vault.strategies(strategy)["totalDebt"] > 0
@@ -183,5 +187,10 @@ def setup(strategy_address, swapper_address, sender=GOVERNANCE):
     assert proxy.lockers(strategy)
     assert strategy.balanceOfStaked() > 0
     assert strategy.balanceOfWant() <= 1
-    assert strategy.feeModeActive()
+    assert vault.performanceFee() == 0
+    assert vault.managementFee() == 0
+    assert vault.strategies(strategy)["performanceFee"] == 0
+    assert vault.rewards() == FEE_RECIPIENT
+    assert strategy.feeRecipient() == FEE_RECIPIENT
+    assert strategy.rewardFee() == REWARD_FEE
     return strategy

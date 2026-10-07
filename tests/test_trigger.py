@@ -187,7 +187,7 @@ def test_week_end_lock_window_does_not_override_trigger_checks(
     starting_credit = _reset_trigger_state(strategy, vault, gov)
     now = _latest_timestamp(chain)
     week_end = (now // WEEK + 1) * WEEK
-    lock_window = strategy.weekEndLockWindow()
+    lock_window = strategy.thresholdTimeUntilWeekEnd()
     assert lock_window == 2 * 24 * 60 * 60
 
     # Start a fresh Curve week when the fork begins inside the lock window, so
@@ -215,11 +215,11 @@ def test_week_end_lock_window_does_not_override_trigger_checks(
 
     window_start = week_end - lock_window
     _mine_at(chain, window_start - 1)
-    assert not strategy.isNearWeekEnd()
+    assert week_end - _latest_timestamp(chain) > lock_window
     assert not strategy.harvestTrigger(0)
 
     _mine_at(chain, window_start)
-    assert strategy.isNearWeekEnd()
+    assert week_end - _latest_timestamp(chain) <= lock_window
     # Near-week-end status only gates proxy maintenance in prepareReturn; it no
     # longer bypasses base-fee or normal trigger checks.
     assert not strategy.harvestTrigger(0)

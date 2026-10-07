@@ -2,54 +2,41 @@ import pytest
 
 
 @pytest.mark.parametrize("repayment", ["revoke", "shutdown"])
-@pytest.mark.parametrize("idle_covers_refund", [False, True])
-def test_fee_share_refund_during_full_repayment(
+def test_debt_is_refreshed_after_otc_withdrawal_during_repayment(
     strategy,
+    swapper_v5,
     vault,
     token,
+    reward_underlying,
     user,
     gov,
-    accounts,
+    management,
     fund_ycrv,
+    funded_crvusd,
     chain,
     repayment,
-    idle_covers_refund,
 ):
-    # Isolate parent-share recycling from claiming, swaps and proxy maintenance.
+    # Isolate the swap from claiming, max-weight staking and proxy maintenance.
     strategy.setBypasses(True, True, {"from": gov})
-    strategy.setSwapThresholds(2**112 - 3, 2**112 - 2, False, {"from": gov})
-    strategy.setWeekEndLockWindow(0, {"from": gov})
-    vault.setManagementFee(0, {"from": gov})
-    vault.updateStrategyPerformanceFee(strategy, 0, {"from": gov})
-    vault.setRewards(accounts[6], {"from": gov})
-    strategy.setRewards(strategy, {"from": gov})
+    strategy.setSwapThresholds(0, 2**112 - 2, False, {"from": gov})
+    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
 
-    # Stage the same fungible yvyCRV shares that a fee report leaves behind.
-    # Keep recycling inactive until their underlying has been invested.
+    # Give the swapper parent-vault share inventory, then invest the deposit so
+    # the Vault must pull the OTC redemption from the strategy, not from idle.
     assets = 1_000 * 10 ** token.decimals()
     fund_ycrv(user, assets)
-    token.approve(vault, 2**256 - 1, {"from": user})
+    token.approve(vault, assets, {"from": user})
     shares_before = vault.balanceOf(user)
     vault.deposit(assets, {"from": user})
-    shares = vault.balanceOf(user) - shares_before
-    assert shares > 0
-    vault.transfer(strategy, shares, {"from": user})
-    strategy.harvest({"from": gov})
-    assert vault.balanceOf(strategy) >= shares
-    assert vault.withdrawalQueue(0) == strategy.address
-
-    if idle_covers_refund:
-        fund_ycrv(user, 2 * assets)
-        vault.deposit(2 * assets, {"from": user})
-
-    refund_value = (
-        vault.balanceOf(strategy) * vault.pricePerShare() // 10 ** vault.decimals()
-    )
-    idle = token.balanceOf(vault)
-    assert (idle >= refund_value) is idle_covers_refund
-    vault.setRewards(strategy, {"from": gov})
-    assert strategy.feeModeActive()
-    assert not strategy.emergencyExit()
+    inventory_shares = vault.balanceOf(user) - shares_before
+    vault.transfer(swapper_v5, inventory_shares, {"from": user})
+    # Vault 0.4.3 keeps each report's gain as idle. The first harvest reports the
+    # migrated position's gain; the second lends that idle back with no new gain.
+    for _ in range(2):
+        chain.sleep(1)
+        chain.mine()
+        strategy.harvest({"from": gov})
+    swapper_v5.enableOtc(True, {"from": management})
 
     if repayment == "revoke":
         vault.revokeStrategy(strategy, {"from": gov})
@@ -58,21 +45,25 @@ def test_fee_share_refund_during_full_repayment(
     debt_before = vault.strategies(strategy)["totalDebt"]
     assert vault.debtOutstanding(strategy) == debt_before
 
+    reward_underlying.transfer(strategy, 100 * 10**18, {"from": user})
+    inventory_value = inventory_shares * vault.pricePerShare() // 10 ** vault.decimals()
+    assert token.balanceOf(vault) < inventory_value
+
     chain.sleep(1)
     chain.mine()
     tx = strategy.harvest({"from": gov})
 
+    # The swapper's redemption repaid part of the debt through Strategy.withdraw
+    # during the swap. The report must repay only the remainder; with a stale
+    # debtOutstanding, liquidatePosition would ask YBS for more than is staked.
+    assert "OTC" in tx.events
+    assert vault.balanceOf(swapper_v5) < inventory_shares
     report = tx.events["Harvested"]
     assert report["profit"] > 0
-    assert report["loss"] == 0
+    assert report["loss"] <= 1
+    assert 0 < report["debtPayment"] < debt_before
     assert vault.strategies(strategy)["totalDebt"] == 0
     assert strategy.estimatedTotalAssets() <= 1
-    if idle_covers_refund:
-        assert report["debtPayment"] == debt_before
-    else:
-        # The share redemption already repaid some debt via Strategy.withdraw.
-        # The report must repay only the remainder, alongside the recycled profit.
-        assert 0 < report["debtPayment"] < debt_before
 
 
 @pytest.mark.parametrize("carry", [0, 5_000 * 10**18])

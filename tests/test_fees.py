@@ -6,6 +6,7 @@ from eth_abi import decode
 
 DEFAULT_FEE_RECIPIENT = "0x044F9C86a0Da637a235E83564215DC271Bc0deFc"
 MAX_UINT = 2**256 - 1
+MAX_REWARD_FEE = 1_000
 WITHDRAW_TOPIC = web3.keccak(
     text="Withdraw(address,address,address,uint256,uint256)"
 ).hex()
@@ -41,42 +42,18 @@ def _assert_reward_redemption(tx, reward_token, strategy, expected_shares):
     assert shares == expected_shares
 
 
-@pytest.mark.parametrize(
-    "strategy_is_vault_rewards,strategy_rewards_is_self",
-    [(False, False), (True, False), (False, True), (True, True)],
-)
-def test_reward_fee_requires_both_rewards_addresses(
+@pytest.mark.parametrize("reward_fee", [0, 1, MAX_REWARD_FEE])
+def test_reward_fee_is_taken_in_reward_vault_shares(
     accounts,
     strategy,
-    vault,
     reward_token,
     user,
     gov,
     crvusd_whale,
-    strategy_is_vault_rewards,
-    strategy_rewards_is_self,
+    reward_fee,
 ):
     fee_recipient = accounts[6]
-    other_vault_rewards = accounts[7]
-    other_strategy_rewards = accounts[8]
-    performance_fee = 1_234
-
-    strategy.setFeeRecipient(fee_recipient, {"from": gov})
-    previous_strategy_rewards = strategy.rewards()
-    strategy.setRewards(
-        strategy if strategy_rewards_is_self else other_strategy_rewards,
-        {"from": gov},
-    )
-    if strategy_rewards_is_self:
-        assert vault.allowance(strategy, previous_strategy_rewards) == 0
-        assert vault.allowance(strategy, strategy) == MAX_UINT
-    vault.setPerformanceFee(performance_fee, {"from": gov})
-    vault.setRewards(
-        strategy if strategy_is_vault_rewards else other_vault_rewards,
-        {"from": gov},
-    )
-    fee_mode_active = strategy_is_vault_rewards and strategy_rewards_is_self
-    assert strategy.feeModeActive() is fee_mode_active
+    strategy.setFee(fee_recipient, reward_fee, {"from": gov})
 
     reward_balance = _seed_reward_shares(strategy, reward_token, user, gov)
     recipient_before = reward_token.balanceOf(fee_recipient)
@@ -85,7 +62,7 @@ def test_reward_fee_requires_both_rewards_addresses(
 
     tx = strategy.harvest({"from": gov})
 
-    expected_fee = reward_balance * performance_fee // 10_000 if fee_mode_active else 0
+    expected_fee = reward_balance * reward_fee // 10_000
     assert reward_token.balanceOf(fee_recipient) - recipient_before == expected_fee
     assert underlying.balanceOf(fee_recipient) == recipient_underlying_before
     assert strategy.balanceOfReward() == 0
@@ -97,7 +74,7 @@ def test_reward_fee_requires_both_rewards_addresses(
     )
 
 
-def test_vault_fee_shares_recycle_while_fee_remains_active(
+def test_harvest_mints_no_vault_shares_with_zero_vault_fees(
     accounts,
     chain,
     strategy,
@@ -108,64 +85,56 @@ def test_vault_fee_shares_recycle_while_fee_remains_active(
     crvusd_whale,
 ):
     fee_recipient = accounts[6]
-
-    strategy.setFeeRecipient(fee_recipient, {"from": gov})
-    strategy.setRewards(strategy, {"from": gov})
+    vault.setPerformanceFee(0, {"from": gov})
     vault.setManagementFee(0, {"from": gov})
     vault.updateStrategyPerformanceFee(strategy, 0, {"from": gov})
-    vault.setPerformanceFee(1_000, {"from": gov})
-    vault.setRewards(strategy, {"from": gov})
-    assert strategy.feeModeActive()
-    _seed_reward_shares(strategy, reward_token, user, gov)
+    strategy.setFee(fee_recipient, MAX_REWARD_FEE, {"from": gov})
 
-    strategy.harvest({"from": gov})
+    reward_balance = _seed_reward_shares(strategy, reward_token, user, gov)
+    recipient_before = reward_token.balanceOf(fee_recipient)
+    vault_rewards = vault.rewards()
+    vault_rewards_shares_before = vault.balanceOf(vault_rewards)
+    supply_before = vault.totalSupply()
 
-    parent_shares = vault.balanceOf(strategy)
-    assert parent_shares > 0
-    recipient_reward_shares = reward_token.balanceOf(fee_recipient)
-    assert recipient_reward_shares > 0
+    chain.sleep(1)
+    chain.mine()
+    tx = strategy.harvest({"from": gov})
 
-    # Keep the fee configuration active. Each report redeems the prior report's
-    # parent-vault shares, then the Vault mints a smaller performance-fee claim
-    # against that recycled profit. This is the intended geometric tail.
-    for _ in range(2):
-        shares_before = parent_shares
-        supply_before = vault.totalSupply()
-        chain.sleep(1)
-        chain.mine()
-
-        strategy.harvest({"from": gov})
-
-        parent_shares = vault.balanceOf(strategy)
-        assert 0 < parent_shares < shares_before
-        assert reward_token.balanceOf(fee_recipient) == recipient_reward_shares
-        assert strategy.balanceOfReward() == 0
-        assert supply_before - vault.totalSupply() == shares_before - parent_shares
+    # The report has a gain, but every Vault fee is zero, so it mints no shares.
+    assert tx.events["Harvested"]["profit"] > 0
+    assert vault.totalSupply() == supply_before
+    assert vault.balanceOf(vault_rewards) == vault_rewards_shares_before
+    assert vault.balanceOf(strategy) == 0
+    assert (
+        reward_token.balanceOf(fee_recipient) - recipient_before
+        == reward_balance * MAX_REWARD_FEE // 10_000
+    )
 
 
-def test_set_fee_recipient_access_and_event(strategy, vault, accounts, gov):
+def test_set_fee_access_and_bounds(strategy, vault, accounts, gov, strategist):
     new_recipient = accounts[6]
-    management_recipient = accounts[7]
-    management = accounts.at(vault.management(), force=True)
+    vault_management = accounts.at(vault.management(), force=True)
 
     assert strategy.feeRecipient() == DEFAULT_FEE_RECIPIENT
+    assert strategy.rewardFee() == 0
 
+    # Only governance sets the fee, as with the Vault's own fee settings.
+    for caller in (accounts[0], strategist, vault_management):
+        with brownie.reverts():
+            strategy.setFee(new_recipient, MAX_REWARD_FEE, {"from": caller})
     with brownie.reverts():
-        strategy.setFeeRecipient(new_recipient, {"from": accounts[0]})
-    with brownie.reverts("!recipient"):
-        strategy.setFeeRecipient(ZERO_ADDRESS, {"from": gov})
+        strategy.setFee(ZERO_ADDRESS, MAX_REWARD_FEE, {"from": gov})
+    with brownie.reverts():
+        strategy.setFee(new_recipient, MAX_REWARD_FEE + 1, {"from": gov})
+    assert strategy.feeRecipient() == DEFAULT_FEE_RECIPIENT
+    assert strategy.rewardFee() == 0
 
-    tx = strategy.setFeeRecipient(new_recipient, {"from": gov})
-    assert (
-        tx.events["FeeRecipientUpdated"]["previousRecipient"] == DEFAULT_FEE_RECIPIENT
-    )
-    assert tx.events["FeeRecipientUpdated"]["newRecipient"] == new_recipient
+    strategy.setFee(new_recipient, MAX_REWARD_FEE, {"from": gov})
     assert strategy.feeRecipient() == new_recipient
+    assert strategy.rewardFee() == MAX_REWARD_FEE
 
-    tx = strategy.setFeeRecipient(management_recipient, {"from": management})
-    assert tx.events["FeeRecipientUpdated"]["previousRecipient"] == new_recipient
-    assert tx.events["FeeRecipientUpdated"]["newRecipient"] == management_recipient
-    assert strategy.feeRecipient() == management_recipient
+    strategy.setFee(new_recipient, 0, {"from": gov})
+    assert strategy.rewardFee() == 0
 
 
 def test_self_rewards_does_not_grant_public_access(
@@ -234,6 +203,6 @@ def test_self_rewards_does_not_grant_public_access(
     assert not reward_distributor.approvedClaimer(strategy, attacker)
 
     # Harvest is also not public, so an attacker cannot force the strategy to
-    # run its own claim/refund/report sequence.
+    # run its own claim/report sequence.
     with brownie.reverts():
         strategy.harvest({"from": attacker})

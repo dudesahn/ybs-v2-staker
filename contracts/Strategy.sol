@@ -18,12 +18,6 @@ interface IERC4626 {
     ) external returns (uint256);
 }
 
-interface IFeeVault {
-    function rewards() external view returns (address);
-
-    function performanceFee() external view returns (uint256);
-}
-
 interface IStrategyProxy {
     function lock() external;
 
@@ -37,7 +31,7 @@ contract Strategy is BaseStrategy {
     ISwapper public swapper;
     bool public bypassClaim;
     bool public bypassMaxStake;
-    uint256 public weekEndLockWindow = 2 days;
+    uint public thresholdTimeUntilWeekEnd = 2 days;
     IYearnBoostedStaker public immutable ybs;
     IRewardDistributor public immutable rewardDistributor;
     IERC20 public immutable rewardToken;
@@ -45,11 +39,7 @@ contract Strategy is BaseStrategy {
     IStrategyProxy public constant proxy =
         IStrategyProxy(0x78eDcb307AC1d1F8F5Fd070B377A6e69C8dcFC34);
     address public feeRecipient = 0x044F9C86a0Da637a235E83564215DC271Bc0deFc;
-
-    event FeeRecipientUpdated(
-        address indexed previousRecipient,
-        address indexed newRecipient
-    );
+    uint256 public rewardFee;
 
     struct SwapThresholds {
         uint112 min;
@@ -86,8 +76,8 @@ contract Strategy is BaseStrategy {
         rewardToken = IERC20(_rewardToken);
         rewardTokenUnderlying = _rewardTokenUnderlying;
 
-        want.approve(address(_ybs), type(uint256).max);
-        _rewardTokenUnderlying.approve(address(_swapper), type(uint256).max);
+        want.approve(address(_ybs), type(uint).max);
+        _rewardTokenUnderlying.approve(address(_swapper), type(uint).max);
 
         _setSwapThresholds(100e18, 10_000e18, true);
         minReportDelay = 22 hours;
@@ -109,7 +99,7 @@ contract Strategy is BaseStrategy {
         returns (uint256 _profit, uint256 _loss, uint256 _debtPayment)
     {
         _claimAndSellRewards();
-        // Redeeming parent-vault shares can repay debt through our withdraw hook.
+        // Vault withdrawals during the swap can repay debt via our withdraw hook.
         _debtOutstanding = vault.debtOutstanding();
 
         uint256 totalAssets = estimatedTotalAssets();
@@ -121,10 +111,10 @@ contract Strategy is BaseStrategy {
         (_amountFreed, _loss) = liquidatePosition(_debtOutstanding + _profit);
         _debtPayment = min(_debtOutstanding, _amountFreed);
 
-        // Lock CRV and extend the shared veCRV position when a normal harvest
-        // lands near the end of the Curve week. The proxy makes both calls
-        // idempotent, so multiple harvests in this window are safe.
-        if (isNearWeekEnd()) {
+        // lock at the end of each epoch
+        uint weekEnd = (block.timestamp / 1 weeks + 1) * 1 weeks;
+        bool isNearEnd = weekEnd - block.timestamp <= thresholdTimeUntilWeekEnd;
+        if (isNearEnd) {
             proxy.lock();
             proxy.maxLock();
         }
@@ -144,13 +134,10 @@ contract Strategy is BaseStrategy {
 
         SwapThresholds memory st = swapThresholds;
         uint256 rewardBalance = balanceOfReward();
-        bool isFeeModeActive = feeModeActive();
-
         if (rewardBalance > st.min) {
             // Take the fee in yield-bearing crvUSD vault shares.
-            if (isFeeModeActive) {
-                uint256 fee = IFeeVault(address(vault)).performanceFee();
-                uint256 feeShares = (rewardBalance * fee) / 10_000;
+            uint256 feeShares = (rewardBalance * rewardFee) / 10_000;
+            if (feeShares > 0) {
                 rewardToken.safeTransfer(feeRecipient, feeShares);
                 rewardBalance -= feeShares;
             }
@@ -163,26 +150,17 @@ contract Strategy is BaseStrategy {
             );
 
             if (st.autoAdjustThresholds) {
-                // Include any unsold crvUSD alongside this week's redeemed rewards.
+                // spread all of our crvUSD, including any carryover, over ~7 harvests
                 uint256 output = rewardTokenUnderlying.balanceOf(address(this));
                 st.max = uint112((output * 101) / 700);
                 swapThresholds.max = st.max;
             }
         }
 
-        // Refund the previous report's yvyCRV fee shares only while the full
-        // replacement-fee configuration is active.
-        if (isFeeModeActive) {
-            uint256 vaultShares = vault.balanceOf(address(this));
-            if (vaultShares > 0) {
-                vault.withdraw(vaultShares, address(this));
-            }
-        }
-
         uint256 toSwap = rewardTokenUnderlying.balanceOf(address(this));
         if (toSwap > st.min) {
             toSwap = min(toSwap, st.max);
-            uint256 profit = swapper.swap(toSwap);
+            uint profit = swapper.swap(toSwap);
             if (
                 profit > 1 &&
                 !bypassMaxStake &&
@@ -191,17 +169,6 @@ contract Strategy is BaseStrategy {
                 ybs.stakeAsMaxWeighted(address(this), profit);
             }
         }
-    }
-
-    function feeModeActive() public view returns (bool) {
-        return
-            IFeeVault(address(vault)).rewards() == address(this) &&
-            rewards == address(this);
-    }
-
-    function isNearWeekEnd() public view returns (bool) {
-        uint256 weekEnd = (block.timestamp / 1 weeks + 1) * 1 weeks;
-        return weekEnd - block.timestamp <= weekEndLockWindow;
     }
 
     // use this during a migration to maintain the strategy's previous boost
@@ -290,12 +257,6 @@ contract Strategy is BaseStrategy {
         rewardDistributor.approveClaimer(_claimer, _approved);
     }
 
-    function setFeeRecipient(address _recipient) external onlyVaultManagers {
-        require(_recipient != address(0), "!recipient");
-        emit FeeRecipientUpdated(feeRecipient, _recipient);
-        feeRecipient = _recipient;
-    }
-
     function setSwapThresholds(
         uint256 _swapThresholdMin,
         uint256 _swapThresholdMax,
@@ -328,18 +289,28 @@ contract Strategy is BaseStrategy {
         bypassMaxStake = _bypassMaxStake;
     }
 
-    function setWeekEndLockWindow(
-        uint256 _weekEndLockWindow
+    // Sets the week-end window in which normal harvests lock CRV; there is no separate trigger.
+    function setWeekEndHarvestTrigger(
+        uint256 _thresholdTimeUntilWeekEnd
     ) external onlyVaultManagers {
-        require(_weekEndLockWindow < 7 days, "Too High");
-        weekEndLockWindow = _weekEndLockWindow;
+        require(_thresholdTimeUntilWeekEnd < 7 days, "Too High");
+        thresholdTimeUntilWeekEnd = _thresholdTimeUntilWeekEnd;
+    }
+
+    function setFee(
+        address _recipient,
+        uint256 _rewardFee
+    ) external onlyGovernance {
+        require(_recipient != address(0) && _rewardFee <= 1_000);
+        feeRecipient = _recipient;
+        rewardFee = _rewardFee;
     }
 
     function upgradeSwapper(ISwapper _swapper) external onlyGovernance {
         require(_swapper.tokenOut() == want, "Invalid Swapper");
         require(_swapper.tokenIn() == rewardTokenUnderlying);
         rewardTokenUnderlying.approve(address(swapper), 0);
-        rewardTokenUnderlying.approve(address(_swapper), type(uint256).max);
+        rewardTokenUnderlying.approve(address(_swapper), type(uint).max);
         swapper = _swapper;
     }
 

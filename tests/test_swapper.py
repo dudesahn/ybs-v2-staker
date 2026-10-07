@@ -78,7 +78,7 @@ def test_current_strategy_uses_market_after_otc_inventory_runs_out(
     treasury_vault = Contract(swapper.vault())
     strategy.setBypasses(True, True, {"from": gov})
     strategy.setSwapThresholds(0, 1_000_000 * PRECISION, False, {"from": gov})
-    strategy.setWeekEndLockWindow(0, {"from": gov})
+    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
     strategy.harvest({"from": gov})
     assert strategy.balanceOfReward() == 0
     assert loose_crvusd.balanceOf(strategy) < PRECISION

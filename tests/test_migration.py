@@ -133,7 +133,7 @@ def test_migration(
     assert old_reward >= reward_shares_to_stage
     assert old_reward_underlying >= underlying_to_stage
 
-    # Parent-vault shares held between fee reports must transfer intact. Stage
+    # Any parent-vault shares the strategy holds must transfer intact. Stage
     # a separate tranche to preserve the user's original withdrawal shares.
     parent_share_assets = 100 * 10 ** token.decimals()
     assert vault.balanceOf(strategy) == 0
@@ -225,9 +225,7 @@ def test_migration_preserves_parent_shares_without_idle_liquidity(
     swapper_v5,
 ):
     # Migration must work even when there is too little idle liquidity to
-    # redeem the parent shares. The replacement can redeem them after it owns
-    # the position and the Vault has moved the withdrawal-queue entry.
-    assert not strategy.feeModeActive()
+    # redeem the parent shares. They move to the replacement intact.
     withdrawal_queue = [vault.withdrawalQueue(i) for i in range(20)]
     active_queue = [address for address in withdrawal_queue if address != ZERO_ADDRESS]
     assert active_queue == [strategy.address]
@@ -279,25 +277,10 @@ def test_migration_preserves_parent_shares_without_idle_liquidity(
     assert vault.debtRatio() == ratio_before
     assert vault.withdrawalQueue(0) == new_strategy.address
 
-    # Resume fee mode on the replacement. Its next harvest redeems the inherited
-    # shares and reports that value as profit, receiving a smaller fee-share tail.
-    new_strategy.setBypasses(True, True, {"from": gov})
-    new_strategy.setSwapThresholds(10**30, 10**30 + 1, False, {"from": gov})
-    new_strategy.setWeekEndLockWindow(0, {"from": gov})
-    new_strategy.setRewards(new_strategy, {"from": gov})
-    vault.setManagementFee(0, {"from": gov})
-    vault.updateStrategyPerformanceFee(new_strategy, 0, {"from": gov})
-    vault.setPerformanceFee(1_000, {"from": gov})
-    vault.setRewards(new_strategy, {"from": gov})
-    assert new_strategy.feeModeActive()
-
-    new_strategy.harvest({"from": gov})
-
-    recycled_fee_shares = vault.balanceOf(new_strategy)
-    assert 0 < recycled_fee_shares < strategy_parent_shares
-    assert supply_before - vault.totalSupply() == (
-        strategy_parent_shares - recycled_fee_shares
-    )
-    assert vault.strategies(new_strategy)["totalGain"] > 0
-    assert vault.strategies(new_strategy)["totalLoss"] == 0
-    assert new_strategy.balanceOfStaked() > 0
+    # The strategy has no fee refund. Governance can still recover stray
+    # parent-vault shares through the inherited rewards allowance.
+    new_strategy.setRewards(gov, {"from": gov})
+    gov_shares_before = vault.balanceOf(gov)
+    vault.transferFrom(new_strategy, gov, strategy_parent_shares, {"from": gov})
+    assert vault.balanceOf(new_strategy) == 0
+    assert vault.balanceOf(gov) - gov_shares_before == strategy_parent_shares
