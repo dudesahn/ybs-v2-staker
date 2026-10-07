@@ -1,10 +1,8 @@
 import brownie
 import pytest
-from brownie import ZERO_ADDRESS, chain, rpc, web3
+from brownie import Contract, ZERO_ADDRESS, chain, rpc, web3
 from brownie.exceptions import RPCRequestError
 from brownie.network.rpc import anvil
-
-from scripts.contract_helpers import deployed_contract
 
 
 DEPLOYED_STRATEGY = "0xe3974e44bc08f435da2c6db7d01e1758496da119"
@@ -75,9 +73,7 @@ def keeper(accounts):
 @pytest.fixture
 def token():
     token_address = "0xFCc5c47bE19d06BF83eB04298b026F81069ff65b"  # this should be the address of the ERC-20 used by the strategy/vault (yCRV)
-    yield deployed_contract(
-        token_address, "balanceOf", "transfer", "approve", "decimals"
-    )
+    yield Contract(token_address)
 
 
 @pytest.fixture
@@ -133,7 +129,7 @@ def amount(token, user, fund_ycrv):
 @pytest.fixture
 def weth():
     token_address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-    yield deployed_contract(token_address, "decimals")
+    yield Contract(token_address)
 
 
 @pytest.fixture
@@ -145,50 +141,22 @@ def weth_amount(user, weth):
 
 @pytest.fixture
 def reward_token():
-    yield deployed_contract(
-        "0xBF319dDC2Edc1Eb6FDf9910E39b37Be221C8805F",  # crvUSD v3 vault
-        "asset",
-        "balanceOf",
-        "transfer",
-        "approve",
-        "deposit",
-        "redeem",
-    )
+    yield Contract("0xBF319dDC2Edc1Eb6FDf9910E39b37Be221C8805F")  # crvUSD v3 vault
 
 
 @pytest.fixture
 def reward_underlying(reward_token):
-    yield deployed_contract(reward_token.asset(), "balanceOf", "transfer", "approve")
+    yield Contract(reward_token.asset())
 
 
 @pytest.fixture
 def vault():
-    yield deployed_contract(
-        "0x27B5739e22ad9033bcBf192059122d163b60349D",
-        "strategies",
-        "withdrawalQueue",
-        "migrateStrategy",
-        "deposit",
-        "withdraw",
-        "balanceOf",
-        "transfer",
-        "totalAssets",
-        "totalDebt",
-        "totalSupply",
-        "pricePerShare",
-        "debtRatio",
-        "setRewards",
-        "setPerformanceFee",
-    )
+    yield Contract("0x27B5739e22ad9033bcBf192059122d163b60349D")
 
 
 @pytest.fixture
 def registry(gov, reward_token, token):
-    registry = deployed_contract(
-        "0x262be1d31d0754399d8d5dc63B99c22146E9f738",
-        "deployments",
-        "createNewDeployment",
-    )
+    registry = Contract("0x262be1d31d0754399d8d5dc63B99c22146E9f738")
     deployment = registry.deployments(token)
     if deployment["yearnBoostedStaker"] == ZERO_ADDRESS:
         registry.createNewDeployment(token, 4, 0, reward_token, {"from": gov})
@@ -198,45 +166,19 @@ def registry(gov, reward_token, token):
 @pytest.fixture
 def ybs(registry, token):
     deployment = registry.deployments(token)
-    yield deployed_contract(
-        deployment["yearnBoostedStaker"],
-        "balanceOf",
-        "MAX_STAKE_GROWTH_WEEKS",
-        "setWeightedStaker",
-        "approvedWeightedStaker",
-        "accountWeeklyMaxStake",
-    )
+    yield Contract(deployment["yearnBoostedStaker"])
 
 
 @pytest.fixture
 def reward_distributor(registry, token):
     deployment = registry.deployments(token)
-    yield deployed_contract(
-        deployment["rewardDistributor"],
-        "getWeek",
-        "getClaimable",
-        "weeklyRewardAmount",
-        "depositReward",
-        "pushRewards",
-        "accountInfo",
-        "approvedClaimer",
-        "claimFor",
-        "claimWithRangeFor",
-        "configureRecipient",
-    )
+    yield Contract(deployment["rewardDistributor"])
 
 
 @pytest.fixture
 def utils(registry, token):
     deployment = registry.deployments(token)
-    yield deployed_contract(
-        deployment["utilities"],
-        "MAX_STAKE_GROWTH_WEEKS",
-        "getWeek",
-        "getUserActiveBoostMultiplier",
-        "getUserProjectedBoostMultiplier",
-        "getGlobalActiveBoostMultiplier",
-    )
+    yield Contract(deployment["utilities"])
 
 
 @pytest.fixture
@@ -258,7 +200,7 @@ def old_strategy(vault):
         "the deployed strategy is no longer first in the withdrawal queue; "
         "update the fork baseline deliberately before changing this fixture"
     )
-    old_strategy = deployed_contract(DEPLOYED_STRATEGY, "estimatedTotalAssets")
+    old_strategy = Contract(DEPLOYED_STRATEGY)
     yield old_strategy
 
 
@@ -304,9 +246,7 @@ def strategy(
     ybs.setWeightedStaker(strategy, True, {"from": gov})
 
     # approve new strategy as a locker on proxy
-    proxy = deployed_contract(
-        "0x78eDcb307AC1d1F8F5Fd070B377A6e69C8dcFC34", "approveLocker"
-    )
+    proxy = Contract("0x78eDcb307AC1d1F8F5Fd070B377A6e69C8dcFC34")
     proxy.approveLocker(strategy, True, {"from": gov})
 
     # Match the live strategy's near-max boost while retaining a small regular stake.
@@ -350,9 +290,7 @@ def shared_setup(fn_isolation):
 
 @pytest.fixture
 def crvusd_dummy_vault(reward_token, gov):
-    factory = deployed_contract(
-        "0x444045c5c13c246e117ed36437303cac8e250ab0", "deploy_new_vault"
-    )
+    factory = Contract("0x444045c5c13c246e117ed36437303cac8e250ab0")
     tx = factory.deploy_new_vault(
         reward_token.asset(),
         "dummy-crvusd",

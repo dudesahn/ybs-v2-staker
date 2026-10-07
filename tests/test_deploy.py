@@ -1,8 +1,8 @@
 import brownie
 import pytest
+from brownie import Contract
 
 from scripts import deploy
-from scripts.contract_helpers import deployed_contract
 
 
 def test_deploy_and_migrate_with_explicit_replacement_swapper(
@@ -19,14 +19,7 @@ def test_deploy_and_migrate_with_explicit_replacement_swapper(
     ybs,
     crvusd_whale,
 ):
-    legacy = deployed_contract(
-        deploy.LEGACY_SWAPPER_V5,
-        "pool1",
-        "pool2",
-        "tokenOutPool1",
-        "pool1InTokenIdx",
-        "pool1OutTokenIdx",
-    )
+    legacy = Contract(deploy.LEGACY_SWAPPER_V5)
     swapper = deploy.deploy_swapper(
         management, deployer=strategist, publish_source=False
     )

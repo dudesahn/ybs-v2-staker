@@ -26,6 +26,11 @@ runner's disposable Brownie configuration. It does not change the project's
 default network, and does not seed or repair deployment metadata. Deployed
 contracts must resolve through `Contract(address)` and verified explorer data.
 
+Keep the objects returned by fresh deployments. If canonical metadata is
+unexpected or lacks a required method, stop and report the address, resolved
+contract name, and missing method. Do not select another ABI or repair the shared
+cache. Run local fork tests with an isolated Brownie data directory.
+
 Format checks run with `npm ci && npm run lint:check` and
 `black --check tests scripts`. The npm lockfile covers only the used formatters;
 the commitlint action supplies its own conventional-commit dependencies.

@@ -9,10 +9,7 @@ Addresses resolve through canonical metadata; fresh deployment objects can be
 passed directly, including during fork rehearsals before source verification.
 """
 
-from brownie import Strategy, SwapperV5, accounts, chain
-
-from scripts.contract_helpers import deployed_contract
-
+from brownie import Contract, Strategy, SwapperV5, accounts, chain
 
 VAULT = "0x27B5739e22ad9033bcBf192059122d163b60349D"
 YBS = "0xE9A115b77A1057C918F997c32663FdcE24FB873f"
@@ -54,14 +51,7 @@ def deploy_swapper(management, deployer=None, publish_source=True):
     deployer = (
         accounts.load(DEPLOYER_ACCOUNT) if deployer is None else _account(deployer)
     )
-    legacy = deployed_contract(
-        LEGACY_SWAPPER_V5,
-        "tokenIn",
-        "tokenOut",
-        "pool1",
-        "tokenOutPool1",
-        "pool2",
-    )
+    legacy = Contract(LEGACY_SWAPPER_V5)
     swapper = deployer.deploy(
         SwapperV5,
         management,
@@ -85,17 +75,15 @@ def main(swapper_address, publish_source=True, deployer=None):
     deployer = (
         accounts.load(DEPLOYER_ACCOUNT) if deployer is None else _account(deployer)
     )
-    vault = deployed_contract(VAULT, "strategies", "balanceOf")
-    old_strategy = deployed_contract(
-        OLD_STRATEGY,
-        "keeper",
-        "strategist",
-        "minReportDelay",
-        "maxReportDelay",
+    vault = Contract(VAULT)
+    old_strategy = Contract(OLD_STRATEGY)
+    ybs = Contract(YBS)
+    reward_distributor = Contract(REWARD_DISTRIBUTOR)
+    swapper = (
+        Contract(swapper_address)
+        if isinstance(swapper_address, str)
+        else swapper_address
     )
-    ybs = deployed_contract(YBS, "MAX_STAKE_GROWTH_WEEKS")
-    reward_distributor = deployed_contract(REWARD_DISTRIBUTOR, "staker", "rewardToken")
-    swapper = deployed_contract(swapper_address, "tokenIn", "tokenOut")
 
     assert reward_distributor.staker() == ybs.address
     strategy = deployer.deploy(
@@ -121,42 +109,20 @@ def setup(strategy_address, swapper_address, sender=GOVERNANCE):
     """Execute the ordered governance migration calls using brownie receipts."""
     assert chain.id == 1
     sender = _account(sender)
-    vault = deployed_contract(
-        VAULT,
-        "governance",
-        "managementFee",
-        "performanceFee",
-        "rewards",
-        "strategies",
-        "balanceOf",
-        "migrateStrategy",
-        "setPerformanceFee",
+    vault = Contract(VAULT)
+    strategy = (
+        Contract(strategy_address)
+        if isinstance(strategy_address, str)
+        else strategy_address
     )
-    strategy = deployed_contract(
-        strategy_address,
-        "vault",
-        "ybs",
-        "rewardDistributor",
-        "swapper",
-        "feeRecipient",
-        "rewards",
-        "keeper",
-        "strategist",
-        "estimatedTotalAssets",
-        "rewardFee",
-        "setFee",
-        "setCreditThreshold",
-        "setBaseFeeOracle",
-        "manualStakeAsMaxWeighted",
-        "balanceOfStaked",
-        "balanceOfWant",
+    old_strategy = Contract(OLD_STRATEGY)
+    ybs = Contract(YBS)
+    proxy = Contract(STRATEGY_PROXY)
+    swapper = (
+        Contract(swapper_address)
+        if isinstance(swapper_address, str)
+        else swapper_address
     )
-    old_strategy = deployed_contract(
-        OLD_STRATEGY, "keeper", "strategist", "baseFeeOracle", "harvest"
-    )
-    ybs = deployed_contract(YBS, "owner", "setWeightedStaker", "approvedWeightedStaker")
-    proxy = deployed_contract(STRATEGY_PROXY, "governance", "approveLocker", "lockers")
-    swapper = deployed_contract(swapper_address, "tokenIn", "tokenOut")
 
     assert sender.address == GOVERNANCE
     assert vault.governance() == ybs.owner() == proxy.governance() == sender.address
