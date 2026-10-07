@@ -128,6 +128,9 @@ def test_operation(
 
     # put it back up to 100%
     vault.updateStrategyDebtRatio(strategy, 10_000, {"from": gov})
+    # On a fork, nothing arbitrages the pools between back-to-back sales, so the
+    # oracle still lags the last sale. Lift the slippage floor for the next one.
+    strategy.setMaxSlippage(10_000, {"from": gov})
     chain.sleep(1)
     tx = strategy.harvest()
     _assert_reward_conversion(tx)

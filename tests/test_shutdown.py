@@ -97,6 +97,9 @@ def test_basic_shutdown(
         vault.debtOutstanding(strategy.address) == params_before_shutdown["totalDebt"]
     )
 
+    # On a fork, nothing arbitrages the pools between back-to-back sales, so the
+    # oracle still lags the last sale. Lift the slippage floor for the next one.
+    strategy.setMaxSlippage(10_000, {"from": gov})
     # A harvest during Vault shutdown must repay all debt and leave the full
     # position idle in the Vault, without silently changing strategy limits.
     chain.sleep(1)

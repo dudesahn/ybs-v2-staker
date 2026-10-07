@@ -107,12 +107,15 @@ def setup(strategy_address, sender=GOVERNANCE):
     old_strategy.harvest({"from": sender})
     vault.migrateStrategy(old_strategy, strategy, {"from": sender})
     strategy.manualStakeAsMaxWeighted(MIGRATION_MAX_WEIGHT_SHARE, {"from": sender})
+    # Keep the old sale size, so migrated crvUSD sells within the slippage floor.
+    strategy.setSwapThresholds(*old_strategy.swapThresholds(), {"from": sender})
     # Charge the performance fee in the strategy, so the Vault mints no fee shares.
     vault.setPerformanceFee(0, {"from": sender})
     strategy.setFee(FEE_RECIPIENT, REWARD_FEE, {"from": sender})
 
     assert vault.strategies(old_strategy)["totalDebt"] == 0
     assert vault.strategies(strategy)["totalDebt"] > 0
+    assert strategy.swapThresholds() == old_strategy.swapThresholds()
     assert ybs.approvedWeightedStaker(strategy)
     assert proxy.lockers(strategy)
     assert strategy.balanceOfStaked() > 0

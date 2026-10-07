@@ -16,6 +16,8 @@ def test_harvest_stakes_swap_proceeds_at_maximum_weight(
 ):
     strategy.setBypasses(True, bypass_max_stake, {"from": gov})
     strategy.setSwapThresholds(0, 1_000_000 * 10**18, False, {"from": gov})
+    # This sells the whole migrated carryover at once, past the default slippage floor.
+    strategy.setMaxSlippage(10_000, {"from": gov})
     strategy.setWeekEndHarvestTrigger(0, {"from": gov})
     strategy.harvest({"from": gov})
     assert ybs.approvedWeightedStaker(strategy)

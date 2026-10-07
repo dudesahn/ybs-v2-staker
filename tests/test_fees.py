@@ -10,6 +10,8 @@ MAX_REWARD_FEE = 1_000
 def _seed_reward_shares(strategy, reward_token, user, gov):
     strategy.setBypasses(True, True, {"from": gov})
     strategy.setSwapThresholds(1, 1_000_000 * 10**18, False, {"from": gov})
+    # This sells the whole migrated carryover at once, past the default slippage floor.
+    strategy.setMaxSlippage(10_000, {"from": gov})
 
     shares = min(reward_token.balanceOf(user), 1_000 * 10**18)
     assert shares > strategy.swapThresholds()["min"]

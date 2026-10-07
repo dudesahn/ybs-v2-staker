@@ -40,6 +40,7 @@ contract Strategy is BaseStrategy {
         IStrategyProxy(0x78eDcb307AC1d1F8F5Fd070B377A6e69C8dcFC34);
     address public feeRecipient = 0x044F9C86a0Da637a235E83564215DC271Bc0deFc;
     uint256 public rewardFee;
+    uint256 public maxSlippage = 300;
 
     struct SwapThresholds {
         uint112 min;
@@ -160,7 +161,11 @@ contract Strategy is BaseStrategy {
         uint256 toSwap = rewardTokenUnderlying.balanceOf(address(this));
         if (toSwap > st.min) {
             toSwap = min(toSwap, st.max);
+            // OTC fills at the swapper's EMA oracle price; bound the market route below it.
+            uint256 minOut = (((toSwap * swapper.priceOracle()) / 1e18) *
+                (10_000 - maxSlippage)) / 10_000;
             uint profit = swapper.swap(toSwap);
+            require(profit >= minOut, "!slippage");
             if (
                 profit > 1 &&
                 !bypassMaxStake &&
@@ -304,6 +309,11 @@ contract Strategy is BaseStrategy {
         require(_recipient != address(0) && _rewardFee <= 1_000);
         feeRecipient = _recipient;
         rewardFee = _rewardFee;
+    }
+
+    function setMaxSlippage(uint256 _maxSlippage) external onlyVaultManagers {
+        require(_maxSlippage <= 10_000);
+        maxSlippage = _maxSlippage;
     }
 
     function upgradeSwapper(ISwapper _swapper) external onlyGovernance {

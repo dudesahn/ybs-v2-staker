@@ -24,6 +24,7 @@ def test_deploy_and_migrate_with_live_swapper(
     assert strategy.maxReportDelay() == old_strategy.maxReportDelay()
     assert strategy.rewards() == strategy.address
     assert strategy.rewardFee() == 0
+    assert strategy.maxSlippage() == 300
     assert vault.strategies(strategy)["activation"] == 0
     assert not swapper.allowedSwapper(strategy)
     assert reward_underlying.allowance(strategy, swapper) == 2**256 - 1
@@ -41,6 +42,7 @@ def test_deploy_and_migrate_with_live_swapper(
     assert params_after_setup["performanceFee"] == params_before_setup["performanceFee"]
     assert vault.debtRatio() == ratio_before_setup
     assert vault.withdrawalQueue(0) == strategy.address
+    assert strategy.swapThresholds() == old_strategy.swapThresholds()
     assert strategy.creditThreshold() == deploy.CREDIT_THRESHOLD
     assert strategy.baseFeeOracle() == old_strategy.baseFeeOracle()
     assert ybs.approvedWeightedStaker(strategy)

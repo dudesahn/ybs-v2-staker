@@ -29,6 +29,9 @@ def _reset_trigger_state(strategy, vault, gov):
     strategy.setCreditThreshold(MAX_UINT256, {"from": gov})
     strategy.setForceHarvestTriggerOnce(False, {"from": gov})
     strategy.harvest({"from": gov})
+    # On a fork, nothing arbitrages the pools between back-to-back sales, so the
+    # oracle still lags the last sale. Lift the slippage floor for the next one.
+    strategy.setMaxSlippage(10_000, {"from": gov})
 
     assert not strategy.forceHarvestTriggerOnce()
     assert not strategy.harvestTrigger(0)

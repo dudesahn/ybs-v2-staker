@@ -218,6 +218,8 @@ def strategy(
 
     # realistically, we'll migrate first before we do anything else
     vault.migrateStrategy(old_strategy, strategy, {"from": gov})
+    # As in deploy.setup, keep the old sale size for the migrated crvUSD.
+    strategy.setSwapThresholds(*old_strategy.swapThresholds(), {"from": gov})
 
     # make sure it's empty
     assert token.balanceOf(old_strategy) == 0 == old_strategy.estimatedTotalAssets()

@@ -6,6 +6,7 @@ from brownie import Contract
 WEEK = 60 * 60 * 24 * 7
 PRECISION = 10**18
 MAX_UINT = 2**256 - 1
+CRV_HOLDER = "0xF977814e90dA44bFA03b6295A0616a897441aceC"
 
 
 def _settle_strategy(swapper, strategy, chain, gov):
@@ -69,6 +70,8 @@ def test_harvest_needs_otc_inventory_or_otc_disabled(
     treasury_vault = Contract(swapper.vault())
     strategy.setBypasses(True, True, {"from": gov})
     strategy.setSwapThresholds(0, 1_000_000 * PRECISION, False, {"from": gov})
+    # This sells the whole migrated carryover at once, past the default slippage floor.
+    strategy.setMaxSlippage(10_000, {"from": gov})
     strategy.setWeekEndHarvestTrigger(0, {"from": gov})
     strategy.harvest({"from": gov})
     assert strategy.balanceOfReward() == 0
@@ -110,6 +113,49 @@ def test_harvest_needs_otc_inventory_or_otc_disabled(
     assert "OTC" not in tx.events
     assert loose_crvusd.balanceOf(strategy) == 0
     assert vault.strategies(strategy)["totalGain"] > gain_before
+
+
+def test_market_sale_must_clear_the_oracle_floor(
+    accounts,
+    strategy,
+    swapper_v5,
+    vault,
+    reward_underlying,
+    gov,
+    chain,
+):
+    crv = Contract(swapper_v5.tokenOutPool1())
+    ycrv_pool = Contract(swapper_v5.pool2())
+    vault_management = accounts.at(vault.management(), force=True)
+    strategy.setBypasses(True, True, {"from": gov})
+    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
+    assert strategy.maxSlippage() == 300
+    assert not swapper_v5.otcEnabled()
+
+    # Sell the migrated crvUSD in typical 1,000 crvUSD slices.
+    sale = 1_000 * PRECISION
+    strategy.setSwapThresholds(1, sale, False, {"from": gov})
+    balance = reward_underlying.balanceOf(strategy)
+    assert balance > 3 * sale
+    strategy.harvest({"from": gov})
+    assert balance - reward_underlying.balanceOf(strategy) == sale
+
+    # Buying yCRV just before the harvest, as a sandwich would, moves the pool
+    # while the EMA oracle lags, so the sale lands well below the oracle price.
+    crv_holder = accounts.at(CRV_HOLDER, force=True)
+    crv.approve(ycrv_pool, MAX_UINT, {"from": crv_holder})
+    ycrv_pool.exchange(0, 1, 100_000 * PRECISION, 0, {"from": crv_holder})
+    balance = reward_underlying.balanceOf(strategy)
+    chain.sleep(1)
+    chain.mine()
+    with brownie.reverts("!slippage"):
+        strategy.harvest({"from": gov})
+    assert reward_underlying.balanceOf(strategy) == balance
+
+    # Vault management can widen the tolerance to let the sale through.
+    strategy.setMaxSlippage(10_000, {"from": vault_management})
+    strategy.harvest({"from": gov})
+    assert balance - reward_underlying.balanceOf(strategy) == sale
 
 
 def test_otc_permission_is_required_and_revocable(

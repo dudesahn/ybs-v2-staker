@@ -22,5 +22,7 @@ interface ISwapper {
 
     function pool2OutTokenIdx() external view returns (uint);
 
+    function priceOracle() external view returns (uint);
+
     function swap(uint _amount) external returns (uint);
 }

@@ -65,6 +65,9 @@ def test_revoke_strategy_from_vault(
     assert vault.debtOutstanding(strategy.address) == params_before["totalDebt"]
     assert vault.creditAvailable(strategy.address) == 0
 
+    # On a fork, nothing arbitrages the pools between back-to-back sales, so the
+    # oracle still lags the last sale. Lift the slippage floor for the next one.
+    strategy.setMaxSlippage(10_000, {"from": gov})
     chain.sleep(1)
     chain.mine(1)
     strategy.harvest()

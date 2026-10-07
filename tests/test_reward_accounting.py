@@ -18,6 +18,8 @@ def test_debt_is_refreshed_after_otc_withdrawal_during_repayment(
     # Isolate the swap from claiming, max-weight staking and proxy maintenance.
     strategy.setBypasses(True, True, {"from": gov})
     strategy.setSwapThresholds(0, 2**112 - 2, False, {"from": gov})
+    # This sells the whole migrated carryover at once, past the default slippage floor.
+    strategy.setMaxSlippage(10_000, {"from": gov})
     strategy.setWeekEndHarvestTrigger(0, {"from": gov})
 
     # Move the swapper's loose yCRV out, so the OTC sale must redeem its live

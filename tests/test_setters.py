@@ -65,6 +65,18 @@ def test_custom_setters_enforce_manager_access_and_bounds(
     strategy.setWeekEndHarvestTrigger(0, {"from": gov})
     assert strategy.thresholdTimeUntilWeekEnd() == 0
 
+    assert strategy.maxSlippage() == 300
+    for caller in (attacker, strategist):
+        with brownie.reverts():
+            strategy.setMaxSlippage(0, {"from": caller})
+    with brownie.reverts():
+        strategy.setMaxSlippage(10_001, {"from": gov})
+    assert strategy.maxSlippage() == 300
+    strategy.setMaxSlippage(10_000, {"from": management})
+    assert strategy.maxSlippage() == 10_000
+    strategy.setMaxSlippage(0, {"from": gov})
+    assert strategy.maxSlippage() == 0
+
     assert not reward_distributor.approvedClaimer(strategy, claimer)
     with brownie.reverts():
         strategy.approveRewardClaimer(claimer, True, {"from": attacker})
