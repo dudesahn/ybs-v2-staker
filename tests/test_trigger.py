@@ -1,8 +1,13 @@
-from brownie import web3
+from brownie import Contract, web3
 
 
 WEEK = 7 * 24 * 60 * 60
 MAX_UINT256 = 2**256 - 1
+MAX_LOCK_TIME = 4 * 365 * 24 * 60 * 60
+CRV = "0xD533a949740bb3306d119CC777fa900bA034cd52"
+VE_CRV = "0x5f3b5DfEb7B28CDbD7FAba78963EE202a494e2A2"
+YEARN_VOTER = "0xF147b8125d2ef93FB6965Db97D6746952a133934"
+CRV_HOLDER = "0xF977814e90dA44bFA03b6295A0616a897441aceC"
 
 
 def _latest_timestamp(chain):
@@ -223,3 +228,46 @@ def test_week_end_lock_window_does_not_override_trigger_checks(
     # Near-week-end status only gates proxy maintenance in prepareReturn; it no
     # longer bypasses base-fee or normal trigger checks.
     assert not strategy.harvestTrigger(0)
+    oracle.setAcceptable(True, {"from": strategist})
+    assert strategy.isBaseFeeAcceptable()
+    assert not strategy.harvestTrigger(0)
+    strategy.setForceHarvestTriggerOnce(True, {"from": gov})
+    assert strategy.harvestTrigger(0)
+
+
+def test_harvest_locks_voter_crv_only_in_week_end_window(
+    accounts,
+    chain,
+    gov,
+    strategy,
+):
+    crv = Contract(CRV)
+    ve_crv = Contract(VE_CRV)
+    lock_window = strategy.thresholdTimeUntilWeekEnd()
+    # Keep the harvests to proxy maintenance: no claims, sales or stakes.
+    strategy.setBypasses(True, True, {"from": gov})
+
+    week_end = (_latest_timestamp(chain) // WEEK + 1) * WEEK
+    if week_end - _latest_timestamp(chain) <= lock_window + 60:
+        # Start a fresh Curve week, so the first harvest is outside the window.
+        _mine_at(chain, week_end + 1)
+        week_end += WEEK
+
+    crv_holder = accounts.at(CRV_HOLDER, force=True)
+    crv.transfer(YEARN_VOTER, 1_000 * 10**18, {"from": crv_holder})
+    voter_crv = crv.balanceOf(YEARN_VOTER)
+    locked_before = ve_crv.locked(YEARN_VOTER)
+
+    tx = strategy.harvest({"from": gov})
+    assert week_end - tx.timestamp > lock_window
+    assert crv.balanceOf(YEARN_VOTER) == voter_crv
+    assert ve_crv.locked(YEARN_VOTER) == locked_before
+
+    _mine_at(chain, week_end - lock_window // 2)
+    tx = strategy.harvest({"from": gov})
+    assert week_end - tx.timestamp <= lock_window
+    # The proxy locks all of the voter's CRV and extends the lock to the maximum.
+    assert crv.balanceOf(YEARN_VOTER) == 0
+    assert ve_crv.locked(YEARN_VOTER)["amount"] == locked_before["amount"] + voter_crv
+    max_lock_end = (tx.timestamp + MAX_LOCK_TIME) // WEEK * WEEK
+    assert ve_crv.locked__end(YEARN_VOTER) == max_lock_end

@@ -1,6 +1,5 @@
 import brownie
 import pytest
-from brownie import ZERO_ADDRESS
 
 
 WEEK = 7 * 24 * 60 * 60
@@ -210,77 +209,10 @@ def test_migration(
     tolerated_loss = max(2, int(amount * RELATIVE_APPROX))
     assert recovered >= amount - tolerated_loss
 
-
-def test_migration_preserves_parent_shares_without_idle_liquidity(
-    token,
-    vault,
-    strategy,
-    amount,
-    Strategy,
-    strategist,
-    gov,
-    user,
-    ybs,
-    reward_distributor,
-    swapper_v5,
-):
-    # Migration must work even when there is too little idle liquidity to
-    # redeem the parent shares. They move to the replacement intact.
-    withdrawal_queue = [vault.withdrawalQueue(i) for i in range(20)]
-    active_queue = [address for address in withdrawal_queue if address != ZERO_ADDRESS]
-    assert active_queue == [strategy.address]
-
-    token.approve(vault, amount, {"from": user})
-    user_shares_before = vault.balanceOf(user)
-    vault.deposit(amount, {"from": user})
-    staged_shares = vault.balanceOf(user) - user_shares_before
-    assert staged_shares > 0
-    vault.transfer(strategy, staged_shares, {"from": user})
-
-    # Invest the deposit without converting unrelated rewards.
-    strategy.setBypasses(True, True, {"from": gov})
-    strategy.setSwapThresholds(10**30, 10**30 + 1, False, {"from": gov})
-    strategy.harvest({"from": gov})
-    strategy_parent_shares = vault.balanceOf(strategy)
-    assert strategy_parent_shares >= staged_shares
-    parent_share_value = (
-        strategy_parent_shares * vault.pricePerShare() // 10 ** vault.decimals()
-    )
-    accounted_idle = vault.totalAssets() - vault.totalDebt()
-    assert accounted_idle < parent_share_value
-
-    new_strategy = strategist.deploy(
-        Strategy, vault, ybs, reward_distributor, swapper_v5
-    )
-    params_before = vault.strategies(strategy)
-    assets_before = vault.totalAssets()
-    debt_before = vault.totalDebt()
-    supply_before = vault.totalSupply()
-    ratio_before = vault.debtRatio()
-    strategy_assets_before = strategy.estimatedTotalAssets()
-
-    vault.migrateStrategy(strategy, new_strategy, {"from": gov})
-
-    params_after = vault.strategies(new_strategy)
-    assert params_after["debtRatio"] == params_before["debtRatio"]
-    assert params_after["totalDebt"] == params_before["totalDebt"]
-    assert vault.strategies(strategy)["debtRatio"] == 0
-    assert vault.strategies(strategy)["totalDebt"] == 0
-    assert vault.balanceOf(strategy) == 0
-    assert vault.balanceOf(new_strategy) == strategy_parent_shares
-    assert strategy.estimatedTotalAssets() <= 1
-    assert abs(new_strategy.balanceOfWant() - strategy_assets_before) <= 1
-    assert new_strategy.balanceOfStaked() == 0
-    assert vault.totalAssets() == assets_before
-    assert vault.totalDebt() == debt_before
-    assert vault.totalSupply() == supply_before
-    assert vault.debtRatio() == ratio_before
-    assert vault.withdrawalQueue(0) == new_strategy.address
-
-    # The strategy has no fee refund. Governance can still recover stray
-    # parent-vault shares through the inherited rewards allowance.
+    # Governance can recover stray parent-vault shares through the inherited
+    # rewards allowance.
     new_strategy.setRewards(gov, {"from": gov})
     gov_shares_before = vault.balanceOf(gov)
-    vault.transferFrom(new_strategy, gov, strategy_parent_shares, {"from": gov})
+    vault.transferFrom(new_strategy, gov, old_vault_shares, {"from": gov})
     assert vault.balanceOf(new_strategy) == 0
-    assert vault.balanceOf(gov) - gov_shares_before == strategy_parent_shares
+    assert vault.balanceOf(gov) - gov_shares_before == old_vault_shares

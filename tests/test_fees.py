@@ -1,14 +1,10 @@
 import brownie
 import pytest
-from brownie import Contract, ZERO_ADDRESS, web3
-from eth_abi import decode
+from brownie import Contract, ZERO_ADDRESS
 
 
 DEFAULT_FEE_RECIPIENT = "0x044F9C86a0Da637a235E83564215DC271Bc0deFc"
 MAX_REWARD_FEE = 1_000
-WITHDRAW_TOPIC = web3.keccak(
-    text="Withdraw(address,address,address,uint256,uint256)"
-).hex()
 
 
 def _seed_reward_shares(strategy, reward_token, user, gov):
@@ -22,23 +18,19 @@ def _seed_reward_shares(strategy, reward_token, user, gov):
 
 
 def _assert_reward_redemption(tx, reward_token, strategy, expected_shares):
-    withdrawals = [
-        log
-        for log in tx.logs
-        if log["address"].lower() == reward_token.address.lower()
-        and log["topics"][0].hex() == WITHDRAW_TOPIC
+    redemptions = [
+        event
+        for event in tx.events["Withdraw"]
+        if event.address.lower() == reward_token.address.lower()
     ]
-    assert len(withdrawals) == 1
+    assert len(redemptions) == 1
 
-    withdrawal = withdrawals[0]
-    expected_account = strategy.address[2:].lower()
-    assert withdrawal["topics"][1].hex()[-40:].lower() == expected_account
-    assert withdrawal["topics"][2].hex()[-40:].lower() == expected_account
-    assert withdrawal["topics"][3].hex()[-40:].lower() == expected_account
-
-    assets, shares = decode(["uint256", "uint256"], withdrawal["data"])
-    assert assets > 0
-    assert shares == expected_shares
+    redemption = redemptions[0]
+    assert redemption["sender"] == strategy.address
+    assert redemption["receiver"] == strategy.address
+    assert redemption["owner"] == strategy.address
+    assert redemption["assets"] > 0
+    assert redemption["shares"] == expected_shares
 
 
 @pytest.mark.parametrize("reward_fee", [0, 1, MAX_REWARD_FEE])

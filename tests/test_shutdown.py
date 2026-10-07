@@ -39,10 +39,13 @@ def test_vault_shutdown_can_withdraw(
     assert vault.debtOutstanding(strategy.address) == params_after_harvest["totalDebt"]
 
     # Shutdown must block new capital while leaving share redemptions open.
-    fund_ycrv(user, 1)
-    assert token.balanceOf(user) >= 1
+    blocked_deposit = 10 ** token.decimals()
+    fund_ycrv(user, blocked_deposit)
+    token.approve(vault, blocked_deposit, {"from": user})
+    assert token.balanceOf(user) >= blocked_deposit
+    assert token.allowance(user, vault) == blocked_deposit
     with brownie.reverts():
-        vault.deposit(1, {"from": user})
+        vault.deposit(blocked_deposit, {"from": user})
 
     user_shares = vault.balanceOf(user) - user_shares_before_deposit
     user_balance_before_withdraw = token.balanceOf(user)
@@ -57,6 +60,10 @@ def test_vault_shutdown_can_withdraw(
     assert vault.balanceOf(user) == user_shares_before_deposit
     assert vault.strategies(strategy)["totalDebt"] <= strategy_debt_before_withdraw
     assert vault.totalAssets() <= vault_assets_before_withdraw - amount_withdrawn
+
+    # The same funded and approved deposit succeeds when shutdown is lifted.
+    vault.setEmergencyShutdown(False, {"from": gov})
+    assert vault.deposit(blocked_deposit, {"from": user}).return_value > 0
 
 
 def test_basic_shutdown(
