@@ -132,8 +132,8 @@ def test_migration(
     assert old_reward >= reward_shares_to_stage
     assert old_reward_underlying >= underlying_to_stage
 
-    # Any parent-vault shares the strategy holds must transfer intact. Stage
-    # a separate tranche to preserve the user's original withdrawal shares.
+    # Stray parent-vault shares stay with the old strategy. Stage a separate
+    # tranche to preserve the user's original withdrawal shares.
     parent_share_assets = 100 * 10 ** token.decimals()
     assert vault.balanceOf(strategy) == 0
     fund_ycrv(user, parent_share_assets)
@@ -175,20 +175,20 @@ def test_migration(
     )
     assert new_params["totalGain"] == 0
     assert new_params["totalLoss"] == 0
-    # Transferring shares preserves the Vault's aggregate accounting and supply.
+    # Migration leaves the Vault's aggregate accounting and supply unchanged.
     assert vault.totalDebt() == vault_debt_before_migration
     assert vault.debtRatio() == vault_debt_ratio_before_migration
     assert vault.totalSupply() == vault_supply_before_migration
     assert vault.totalAssets() == vault_assets_before_migration
 
-    # Every persistent balance is transferred and the old strategy is fully
-    # drained. Want that was staked is unstaked directly to the replacement.
+    # Want and both reward balances move to the replacement. Want that was
+    # staked is unstaked directly to the replacement.
     assert strategy.balanceOfWant() == 0
     assert strategy.balanceOfStaked() == 0
     assert strategy.balanceOfReward() == 0
     assert reward_underlying.balanceOf(strategy) == 0
-    assert vault.balanceOf(strategy) == 0
-    assert vault.balanceOf(new_strategy) == old_vault_shares
+    assert vault.balanceOf(strategy) == old_vault_shares
+    assert vault.balanceOf(new_strategy) == 0
     assert new_strategy.balanceOfStaked() == 0
     assert abs(new_strategy.balanceOfWant() - (old_want + old_staked)) <= 1
     assert new_strategy.balanceOfReward() == old_reward
@@ -209,10 +209,10 @@ def test_migration(
     tolerated_loss = max(2, int(amount * RELATIVE_APPROX))
     assert recovered >= amount - tolerated_loss
 
-    # Governance can recover stray parent-vault shares through the inherited
+    # Governance can recover them from the old strategy through the inherited
     # rewards allowance.
-    new_strategy.setRewards(gov, {"from": gov})
+    strategy.setRewards(gov, {"from": gov})
     gov_shares_before = vault.balanceOf(gov)
-    vault.transferFrom(new_strategy, gov, old_vault_shares, {"from": gov})
-    assert vault.balanceOf(new_strategy) == 0
+    vault.transferFrom(strategy, gov, old_vault_shares, {"from": gov})
+    assert vault.balanceOf(strategy) == 0
     assert vault.balanceOf(gov) - gov_shares_before == old_vault_shares

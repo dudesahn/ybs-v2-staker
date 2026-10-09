@@ -328,8 +328,6 @@ contract Strategy is BaseStrategy {
     function prepareMigration(address _newStrategy) internal override {
         uint256 amount = balanceOfStaked();
         if (amount > 1) ybs.unstake(amount, _newStrategy);
-        amount = vault.balanceOf(address(this));
-        if (amount > 0) vault.transfer(_newStrategy, amount);
         amount = rewardToken.balanceOf(address(this));
         if (amount > 0) rewardToken.safeTransfer(_newStrategy, amount);
         amount = rewardTokenUnderlying.balanceOf(address(this));
