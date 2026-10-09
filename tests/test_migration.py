@@ -11,7 +11,6 @@ def test_migration_preserves_near_max_boost(
     utils,
     ybs,
     gov,
-    user,
     live_strategy_active_boost,
     migration_max_weight_share,
 ):
@@ -34,13 +33,8 @@ def test_migration_preserves_near_max_boost(
 
     loose_before = strategy.balanceOfWant()
 
-    # Only Vault managers may configure the migrated position, exactly 100%
-    # is intentionally rejected, and an existing YBS position cannot be reset.
-    with brownie.reverts():
-        strategy.manualStakeAsMaxWeighted(
-            migration_max_weight_share,
-            {"from": user},
-        )
+    # Exactly 100% is intentionally rejected, and an existing YBS position
+    # cannot be reset.
     with brownie.reverts("!percentage"):
         strategy.manualStakeAsMaxWeighted(10**18, {"from": gov})
     with brownie.reverts("!empty"):
@@ -57,6 +51,40 @@ def test_migration_preserves_near_max_boost(
     chain.mine()
     assert abs(utils.getUserActiveBoostMultiplier(strategy) - projected_boost) <= 10
     assert strategy.balanceOfStaked() == staked_before
+
+
+def test_migration_stake_requires_vault_manager(
+    Strategy,
+    strategist,
+    vault,
+    ybs,
+    reward_distributor,
+    swapper_v5,
+    gov,
+    user,
+    fund_ycrv,
+    migration_max_weight_share,
+):
+    replacement = strategist.deploy(
+        Strategy, vault, ybs, reward_distributor, swapper_v5
+    )
+    ybs.setWeightedStaker(replacement, True, {"from": gov})
+    amount = 1_000 * 10**18
+    fund_ycrv(replacement, amount)
+    assert ybs.approvedWeightedStaker(replacement)
+    assert replacement.balanceOfStaked() == 0
+    assert replacement.balanceOfWant() == amount
+
+    # The position is empty, approved and funded: authorization must be the
+    # only reason this call fails.
+    with brownie.reverts():
+        replacement.manualStakeAsMaxWeighted(migration_max_weight_share, {"from": user})
+    assert replacement.balanceOfStaked() == 0
+    assert replacement.balanceOfWant() == amount
+
+    replacement.manualStakeAsMaxWeighted(migration_max_weight_share, {"from": gov})
+    assert replacement.balanceOfStaked() == amount
+    assert replacement.balanceOfWant() == 0
 
 
 def test_migration(
