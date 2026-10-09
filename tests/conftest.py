@@ -218,7 +218,9 @@ def strategy(
 
     # realistically, we'll migrate first before we do anything else
     vault.migrateStrategy(old_strategy, strategy, {"from": gov})
-    # As in deploy.setup, keep the old sale size for the migrated crvUSD.
+    # This midweek fork has unsold crvUSD, so routine tests use the old sale cap.
+    # deploy.setup keeps the constructor defaults, because the old strategy is
+    # cleared before migration.
     strategy.setSwapThresholds(*old_strategy.swapThresholds(), {"from": gov})
 
     # make sure it's empty

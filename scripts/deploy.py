@@ -1,6 +1,10 @@
 """Deploy and migrate the yCRV YBS strategy.
 
 The new strategy keeps the live SwapperV5 and its OTC inventory.
+Setup does not harvest the old strategy. To avoid migrating unsold crvUSD, which
+would sell with no fee, first clear it with one OTC harvest of the old strategy,
+then restore that strategy's sale thresholds.
+The new strategy keeps its constructor sale thresholds, with auto-adjust on.
 For brownie-safe, call ``setup(strategy, safe.account)`` and build the
 multisend from the resulting receipts in the multisig repository.
 Addresses resolve through canonical metadata; a fresh strategy deployment can be
@@ -40,6 +44,7 @@ def _assert_staged(strategy, vault, old_strategy):
     assert strategy.estimatedTotalAssets() == 0
     assert vault.balanceOf(strategy) == 0
     assert strategy.rewardFee() == 0
+    assert strategy.swapThresholds()["autoAdjustThresholds"]
 
 
 def main(publish_source=True, deployer=None):
@@ -102,19 +107,15 @@ def setup(strategy_address, sender=GOVERNANCE):
     strategy.setBaseFeeOracle(old_strategy.baseFeeOracle(), {"from": sender})
     ybs.setWeightedStaker(strategy, True, {"from": sender})
     proxy.approveLocker(strategy, True, {"from": sender})
-    # Settle the old position before transferring it.
-    old_strategy.harvest({"from": sender})
     vault.migrateStrategy(old_strategy, strategy, {"from": sender})
     strategy.manualStakeAsMaxWeighted(MIGRATION_MAX_WEIGHT_SHARE, {"from": sender})
-    # Keep the old sale size, so migrated crvUSD sells within the slippage floor.
-    strategy.setSwapThresholds(*old_strategy.swapThresholds(), {"from": sender})
     # Charge the performance fee in the strategy, so the Vault mints no fee shares.
     vault.setPerformanceFee(0, {"from": sender})
     strategy.setFee(FEE_RECIPIENT, REWARD_FEE, {"from": sender})
 
     assert vault.strategies(old_strategy)["totalDebt"] == 0
     assert vault.strategies(strategy)["totalDebt"] > 0
-    assert strategy.swapThresholds() == old_strategy.swapThresholds()
+    assert strategy.swapThresholds()["autoAdjustThresholds"]
     assert strategy.creditThreshold() == old_strategy.creditThreshold()
     assert ybs.approvedWeightedStaker(strategy)
     assert proxy.lockers(strategy)
