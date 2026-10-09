@@ -106,13 +106,69 @@ def test_harvest_needs_otc_inventory_or_otc_disabled(
     with brownie.reverts():
         strategy.harvest({"from": gov})
 
-    # Operating rule: disable OTC when inventory runs out.
+    # Operating rule: disable OTC when inventory is empty or too small to mint
+    # treasury-vault shares (covered separately below).
     swapper.enableOtc(False, {"from": management})
     gain_before = vault.strategies(strategy)["totalGain"]
     tx = strategy.harvest({"from": gov})
     assert "OTC" not in tx.events
     assert loose_crvusd.balanceOf(strategy) == 0
     assert vault.strategies(strategy)["totalGain"] > gain_before
+
+
+@pytest.mark.parametrize("sell_wei", [0, 1])
+def test_tiny_otc_inventory_requires_otc_disabled(
+    sell_wei,
+    strategy,
+    swapper_v5,
+    vault,
+    token,
+    reward_underlying,
+    gov,
+    management,
+    fund_ycrv,
+    chain,
+):
+    swapper = swapper_v5
+    treasury_vault = Contract(swapper.vault())
+    strategy.setBypasses(True, True, {"from": gov})
+    strategy.setWeekEndHarvestTrigger(0, {"from": gov})
+    sale = 1_000 * PRECISION
+    strategy.setSwapThresholds(100 * PRECISION, sale, False, {"from": gov})
+    assert strategy.maxSlippage() == 300
+    balance_before = reward_underlying.balanceOf(strategy)
+    assert balance_before > sale
+
+    swapper.sweep(token, {"from": management})
+    swapper.sweep(vault, {"from": management})
+    # Nonzero yCRV inventory can quote either zero crvUSD or one wei, which
+    # rounds to zero treasury-vault shares at this fork's share price.
+    price = swapper.priceOracle()
+    inventory = 1 if sell_wei == 0 else price // PRECISION + 1
+    assert inventory * PRECISION // price == sell_wei
+    fund_ycrv(swapper, inventory)
+    assert token.balanceOf(swapper) == inventory
+    assert vault.balanceOf(swapper) == 0
+    swapper.enableOtc(True, {"from": management})
+    treasury_before = treasury_vault.balanceOf(swapper.treasury())
+
+    chain.sleep(1)
+    chain.mine()
+    with brownie.reverts("cannot mint zero"):
+        strategy.harvest({"from": gov})
+    assert reward_underlying.balanceOf(strategy) == balance_before
+    assert token.balanceOf(swapper) == inventory
+    assert treasury_vault.balanceOf(swapper.treasury()) == treasury_before
+
+    # Disable OTC even when its inventory is nonzero but unusably small.
+    # The same sale must succeed with the default slippage floor still active.
+    swapper.enableOtc(False, {"from": management})
+    gain_before = vault.strategies(strategy)["totalGain"]
+    tx = strategy.harvest({"from": gov})
+    assert "OTC" not in tx.events
+    assert reward_underlying.balanceOf(strategy) == balance_before - sale
+    assert vault.strategies(strategy)["totalGain"] > gain_before
+    assert token.balanceOf(swapper) == inventory
 
 
 def test_market_sale_must_clear_the_oracle_floor(
