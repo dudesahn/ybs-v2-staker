@@ -13,8 +13,7 @@ YCRV_SWAP_TOPIC = web3.keccak(
 def _events_for(tx, name):
     if name not in tx.events:
         return []
-    events = tx.events[name]
-    return events if isinstance(events, (list, tuple)) else [events]
+    return list(tx.events[name])
 
 
 def _assert_reward_conversion(tx, require_swap=False):
