@@ -119,7 +119,8 @@ def setup(strategy_address, sender=GOVERNANCE):
     assert ybs.approvedWeightedStaker(strategy)
     assert proxy.lockers(strategy)
     assert strategy.balanceOfStaked() > 0
-    assert strategy.balanceOfWant() <= 1
+    # YBS stakes even amounts only, so each part of the split can leave 1 wei.
+    assert strategy.balanceOfWant() <= 2
     assert vault.performanceFee() == 0
     assert vault.managementFee() == 0
     assert vault.strategies(strategy)["performanceFee"] == 0

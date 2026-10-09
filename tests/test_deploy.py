@@ -47,7 +47,7 @@ def test_deploy_and_migrate_with_live_swapper(
     assert strategy.baseFeeOracle() == old_strategy.baseFeeOracle()
     assert ybs.approvedWeightedStaker(strategy)
     assert strategy.balanceOfStaked() > 0
-    assert strategy.balanceOfWant() <= 1
+    assert strategy.balanceOfWant() <= 2
     assert vault.performanceFee() == 0
     assert vault.rewards() == deploy.FEE_RECIPIENT
     assert strategy.feeRecipient() == deploy.FEE_RECIPIENT

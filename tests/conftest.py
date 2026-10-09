@@ -252,7 +252,7 @@ def strategy(
         "Current new strategy projected boost:",
         utils.getUserProjectedBoostMultiplier(strategy) / 1e18,
     )
-    assert strategy.balanceOfWant() <= 1
+    assert strategy.balanceOfWant() <= 2
     assert strategy.estimatedTotalAssets() > 0
 
     yield strategy
