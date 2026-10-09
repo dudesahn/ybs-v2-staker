@@ -19,7 +19,6 @@ FEE_RECIPIENT = "0x044F9C86a0Da637a235E83564215DC271Bc0deFc"
 GOVERNANCE = "0xFEB4acf3df3cDEA7399794D0869ef76A6EfAff52"
 
 DEPLOYER_ACCOUNT = "wavey3"
-CREDIT_THRESHOLD = 25_000 * 10**18
 REWARD_FEE = 1_000
 MIGRATION_MAX_WEIGHT_SHARE = 998 * 10**15
 
@@ -99,7 +98,7 @@ def setup(strategy_address, sender=GOVERNANCE):
     assert vault.balanceOf(old_strategy) == 0
     _assert_staged(strategy, vault, old_strategy)
 
-    strategy.setCreditThreshold(CREDIT_THRESHOLD, {"from": sender})
+    strategy.setCreditThreshold(old_strategy.creditThreshold(), {"from": sender})
     strategy.setBaseFeeOracle(old_strategy.baseFeeOracle(), {"from": sender})
     ybs.setWeightedStaker(strategy, True, {"from": sender})
     proxy.approveLocker(strategy, True, {"from": sender})
@@ -116,6 +115,7 @@ def setup(strategy_address, sender=GOVERNANCE):
     assert vault.strategies(old_strategy)["totalDebt"] == 0
     assert vault.strategies(strategy)["totalDebt"] > 0
     assert strategy.swapThresholds() == old_strategy.swapThresholds()
+    assert strategy.creditThreshold() == old_strategy.creditThreshold()
     assert ybs.approvedWeightedStaker(strategy)
     assert proxy.lockers(strategy)
     assert strategy.balanceOfStaked() > 0

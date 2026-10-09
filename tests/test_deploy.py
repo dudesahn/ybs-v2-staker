@@ -43,7 +43,7 @@ def test_deploy_and_migrate_with_live_swapper(
     assert vault.debtRatio() == ratio_before_setup
     assert vault.withdrawalQueue(0) == strategy.address
     assert strategy.swapThresholds() == old_strategy.swapThresholds()
-    assert strategy.creditThreshold() == deploy.CREDIT_THRESHOLD
+    assert strategy.creditThreshold() == old_strategy.creditThreshold()
     assert strategy.baseFeeOracle() == old_strategy.baseFeeOracle()
     assert ybs.approvedWeightedStaker(strategy)
     assert strategy.balanceOfStaked() > 0
